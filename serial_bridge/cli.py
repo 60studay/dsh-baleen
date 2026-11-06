@@ -73,10 +73,14 @@ def _paths():
 def default_log_root():
     """默认日志/状态目录。
 
-    必须和 index.js 的 DEFAULT_LOG_ROOT 是同一个值：
-    `~/.dsh/serial-logs`。两边不一致就会出现"两份 state、控制权不同步"（Bug 3）。
+    **必须和 index.js 的 DEFAULT_LOG_ROOT 是同一个值**，否则会出现
+    "两份 state、控制权不同步"（Bug 3：网页点了[交给AI]，工具却还报 human）。
+
+    当前约定：跟着插件走，`<插件目录>/logs`。
+    index.js 那边是 `path.join(HERE, 'logs')`，这里对应 `BASE/logs`。
+    改一边必须同时改另一边。
     """
-    return os.path.join(os.path.expanduser("~"), ".dsh", "serial-logs")
+    return os.path.join(BASE, "logs")
 
 
 class Logger(object):
