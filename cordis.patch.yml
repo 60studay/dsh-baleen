@@ -10,5 +10,5 @@
       config:
         # 留空则自动探测（优先用 DSH 自带的 Python，其次系统 PATH 里的 python）
         pythonPath: ''
-        # 留空则默认写到 <用户家目录>/.dsh/serial-logs
+        # 留空则默认写到 <插件目录>/logs（跟着插件走，不碰用户家目录）
         logRoot: ''

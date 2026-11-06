@@ -11,7 +11,6 @@
  */
 import { execFile } from 'node:child_process';
 import { promises as fsp, readFileSync } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -26,8 +25,10 @@ export const name = 'whalesong';
 export const inject = ['tools'];
 
 const DEFAULT_PYTHON = process.env.DSH_PYTHON || 'python';
+// 日志默认写到插件自己的目录下（跟着插件走，不碰用户家目录，也不暴露用户名）。
+// 需要换位置就设环境变量 SERIAL_BRIDGE_LOG_DIR。
 const DEFAULT_LOG_ROOT =
-  process.env.SERIAL_BRIDGE_LOG_DIR || path.join(os.homedir(), '.dsh', 'serial-logs');
+  process.env.SERIAL_BRIDGE_LOG_DIR || path.join(HERE, 'logs');
 const CALL_TIMEOUT_MS = 25000;
 
 /** 结构化错误的 kind → 给模型的一句话行动建议（与 kind 一一对应，不含设备语义）。 */
