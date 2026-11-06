@@ -109,7 +109,7 @@ def _fail(error):
     return 1
 
 
-def _forward_to_daemon(paths, scene_name, command, actor):
+def _forward_to_daemon(paths, scene_name, command, actor, no_wait=False):
     """管家在跑就把命令交给它（三级降级的第一级）。
 
     返回**已经组织好的 data dict**；管家没跑/不可达时返回 None，调用方继续降级。
@@ -119,9 +119,11 @@ def _forward_to_daemon(paths, scene_name, command, actor):
     info = daemon_mod.read_instance(paths, scene_name)
     if not info:
         return None
-    result = daemon_mod.request(info.get("url") or "", "/send",
-                                {"text": command, "mode": "text", "actor": actor},
-                                timeout=5.0)
+    result = daemon_mod.request(
+        info.get("url") or "", "/send",
+        {"text": command, "mode": "text", "actor": actor,
+         "wait_ms": 0 if no_wait else None},
+        timeout=5.0)
     if result is None:
         return None                       # 管家死了/端口不通 → 降级
     if not result.get("ok"):
@@ -135,13 +137,14 @@ def _forward_to_daemon(paths, scene_name, command, actor):
         "command": command,
         "port": payload.get("port") or "",
         "port_source": "daemon",
-        "note": "经由管家（常驻连接）",
+        "note": "已发出（不等回显）" if no_wait else "经由管家（常驻连接）",
         "response": payload.get("response") or "",
         "response_hex": payload.get("response_hex") or "",
         "bytes": int(payload.get("bytes") or 0),
         "submit_ms": int(payload.get("submit_ms") or 0),
         "elapsed_ms": int(payload.get("elapsed_ms") or 0),
         "empty": bool(payload.get("empty")),
+        "submitted": bool(payload.get("submitted")),
         "via": "daemon",
         "transport": payload.get("transport"),
     }
@@ -277,7 +280,8 @@ def cmd_send(paths, args):
             )
 
     # 一级：管家在跑 → 走它（常驻连接，~几十毫秒）
-    via_daemon = _forward_to_daemon(paths, scene.name, args.command, actor)
+    via_daemon = _forward_to_daemon(paths, scene.name, args.command, actor,
+                                    no_wait=bool(getattr(args, "no_wait", False)))
     if via_daemon is not None:
         return _ok(via_daemon)
 
@@ -309,6 +313,28 @@ def cmd_send(paths, args):
         return _ok(data)
 
     resolved = resolve_port(cfg)
+
+    # 没有管家、又要求"发完就走"：写完立刻关，回显之后用 read 取
+    if getattr(args, "no_wait", False):
+        sent = serial_io.send_only(cfg, resolved["device"], args.command)
+        logger.append("TX", args.command)
+        state.update(port=resolved["device"], baud=int(cfg.get("baud") or 0),
+                     scene=scene.name)
+        return _ok({
+            "scene": scene.name,
+            "command": args.command,
+            "port": resolved["device"],
+            "port_source": resolved["source"],
+            "note": resolved["note"],
+            "response": "",
+            "response_hex": "",
+            "bytes": 0,
+            "submit_ms": sent["submit_ms"],
+            "elapsed_ms": sent["submit_ms"],
+            "empty": True,
+            "submitted": True,
+        })
+
     result = serial_io.transact(cfg, resolved["device"], args.command)
     logger.append("TX", args.command)
     if result["rx_text"]:
@@ -521,6 +547,8 @@ def build_parser():
     send.add_argument("--command", required=True)
     send.add_argument("--as", dest="actor", default="human", choices=["human", "ai"])
     send.add_argument("--auto", action="store_true", help="按自动命令处理，强制白名单检查")
+    send.add_argument("--no-wait", action="store_true",
+                      help="发完立刻返回，不等回显（批量下命令用，回显之后用 read 取）")
 
     read = sub.add_parser("read")
     read.add_argument("--scene", required=True)

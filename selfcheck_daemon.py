@@ -75,6 +75,23 @@ def main():
         again = daemon.poll(first["cursor"])
         check("游标之后没有重复数据", again["bytes"] == 0, again["bytes"])
 
+        print("\n[1b] wait=False：发完就走，回显不丢")
+        cursor = daemon.poll(-1)["cursor"]        # -1 = 只要之后的新数据
+        quick = daemon.send("X", "text", "ai", wait_ms=0)
+        check("立即返回 submitted", quick.get("submitted") is True, quick)
+        check("不等回显（bytes=0）", quick["bytes"] == 0, quick["bytes"])
+        check("提交很快（<=50ms）", quick["submit_ms"] <= 50, quick["submit_ms"])
+        deadline = time.time() + 3
+        got = b""
+        while time.time() < deadline:
+            chunk = daemon.poll(cursor)
+            cursor = chunk["cursor"]
+            if chunk["bytes"]:
+                got = chunk["rx_text"].encode("utf-8")
+                break
+            time.sleep(0.05)
+        check("回显仍能从 poll 取回", len(got) > 0, len(got))
+
         print("\n[3] 常驻连接：连发 3 条都不应该出现「被占用」")
         errors = []
         for _ in range(3):

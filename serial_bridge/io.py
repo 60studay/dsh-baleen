@@ -138,6 +138,30 @@ def transact(cfg, device, payload, baud=None, raw_bytes=None):
             pass
 
 
+def send_only(cfg, device, payload, baud=None, raw_bytes=None):
+    """只发不收：写出去就关。
+
+    批量下命令（PID 调参之类连发几十条）时用——不必每条都等设备回话，
+    回显之后用 drain() 统一收。
+    """
+    newline = decode_newline(cfg.get("newline"), "\\r\\n")
+    started = time.time()
+    ser = _open_with_retry(cfg, device, baud)
+    try:
+        ser.write(raw_bytes if raw_bytes is not None
+                  else str(payload).encode("utf-8") + newline)
+        submit_ms = int((time.time() - started) * 1000)
+    except Exception as exc:
+        raise BridgeError("internal", "向 %s 写入失败。" % device,
+                          hint=["设备可能被拔掉"], detail=str(exc))
+    finally:
+        try:
+            ser.close()
+        except Exception:
+            pass
+    return {"submit_ms": submit_ms, "bytes": 0, "empty": True, "submitted": True}
+
+
 def drain(cfg, device, duration_ms=400, baud=None):
     """只读不发：短暂开一次口，尽可能收干净。
 

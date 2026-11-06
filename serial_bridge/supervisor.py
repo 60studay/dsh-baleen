@@ -439,8 +439,61 @@ class WebServer(object):
     # 轻模式下本来就不常占口，这里主要影响 watch 模式。
 
     def _should_hold_port(self, control=None):
+        # 管家在跑时绝不由网页再拿一次口——两个持有者必然抢口
+        if self._daemon_url():
+            return False
         state = (control or self.state.read().get("state") or "human")
         return self.mode == "watch" and state == "ai"
+
+    # ── 管家（可选）─────────────────────────────────────────────────────────
+    def _daemon_url(self):
+        """管家在跑就返回它的地址；缓存 2 秒，避免每次刷新状态都探测。"""
+        now = time.time()
+        cached = getattr(self, "_daemon_cache", None)
+        if cached and now - cached[0] < 2.0:
+            return cached[1]
+        url = None
+        try:
+            from . import daemon as daemon_mod
+            info = daemon_mod.read_instance(self.paths, self.scene.name)
+            if info:
+                status = daemon_mod.request(info.get("url") or "", "/status", timeout=0.5)
+                if status and status.get("ok") and status.get("running"):
+                    url = info.get("url")
+        except Exception:
+            url = None
+        self._daemon_cache = (now, url)
+        return url
+
+    def _proxy_send_to_daemon(self, command, mode, actor, source):
+        """管家在跑就让它发；返回 None 表示"没管家，走原来的路"。"""
+        url = self._daemon_url()
+        if not url:
+            return None
+        from . import daemon as daemon_mod
+        result = daemon_mod.request(url, "/send",
+                                    {"text": command, "mode": mode,
+                                     "actor": actor, "source": source},
+                                    timeout=10.0)
+        if result is None:
+            self._daemon_cache = (0, None)      # 连不上：下次重新探测
+            return None
+        if not result.get("ok"):
+            err = result.get("error") or {}
+            raise BridgeError(err.get("kind") or "internal",
+                              err.get("message") or "管家拒绝了这个命令",
+                              hint=err.get("hint"))
+        payload = result.get("data") or {}
+        return {
+            "ok": True,
+            "accepted": True,
+            "mode": self.mode,
+            "rx_text": payload.get("response") or "",
+            "rx_hex": payload.get("response_hex") or "",
+            "bytes": int(payload.get("bytes") or 0),
+            "elapsed_ms": int(payload.get("elapsed_ms") or 0),
+            "note": "经由管家（常驻连接）",
+        }
 
     def _release_port_if_idle(self, reason=""):
         """按当前控制权决定是否放开串口。返回是否真的放开了。"""
@@ -587,7 +640,31 @@ class WebServer(object):
         自动发送（定时发送 / 规则自动处置）的每一帧都会进 `auto_frames`，
         这里**不分 mode** 都取走——否则 light 模式下定时发送在页面上看不到回显
         （Bug 4：用户说"没看到"，不是"没发送"）。
+
+        管家在跑时改从管家取（游标式增量），网页就完全不用碰串口了。
         """
+        url = self._daemon_url()
+        if url:
+            from . import daemon as daemon_mod
+            # 第一次接上管家时用 -1：只收从现在起的新数据，不倒历史
+            cursor = getattr(self, "_daemon_cursor", -1)
+            cursor = -1 if cursor is None else int(cursor)
+            proxied = daemon_mod.request(url, "/poll?cursor=%d" % cursor, timeout=2.0)
+            if proxied and proxied.get("ok"):
+                self._daemon_cursor = int(proxied.get("cursor") or cursor)
+                if proxied.get("bytes"):
+                    return {
+                        "ok": True,
+                        "frames": [],
+                        "rx_text": proxied.get("rx_text") or "",
+                        "rx_hex": proxied.get("rx_hex") or "",
+                        "bytes": int(proxied.get("bytes") or 0),
+                        "via": "daemon",
+                    }
+                return {"ok": True, "frames": [], "rx_text": "", "rx_hex": "",
+                        "bytes": 0, "via": "daemon"}
+            self._daemon_cache = (0, None)      # 管家掉线：回退到本地逻辑
+
         frames = self.loop.take_frames()
         data = self.loop.take()
         if frames or data:
@@ -629,6 +706,9 @@ class WebServer(object):
 
         source 表示"谁发的"：web(页面按钮) / ai(插件 serial_send 转发过来)。
         AI 发起的会在 auto_frames 里记一帧，网页回显区就能看到（Bug 8）。
+
+        管家在跑时**交给管家发**：它已经常驻持有连接，网页就不该再去开关口
+        ——否则用户在网页上点一下，AI 的速度就从 0ms 掉回 1 秒（第 4 件核心目标）。
         """
         command = str(text or "").strip()
         if not command:
@@ -646,6 +726,10 @@ class WebServer(object):
         else:
             # 安全规则 1：人类命令永远优先，AI 托管立即让位
             self.state.note_human_command()
+
+        proxied = self._proxy_send_to_daemon(command, mode, actor, source)
+        if proxied is not None:
+            return proxied
 
         if mode == "hex":
             payload_bytes = _parse_hex(command)

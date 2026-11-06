@@ -368,6 +368,14 @@ export function apply(ctx, config = {}) {
         description:
           'The command text without line ending; the scene config appends its own (default CRLF).',
       },
+      wait: {
+        type: 'boolean',
+        description:
+          'true (default) = wait for the device reply and return it. ' +
+          'false = return as soon as the bytes are out, for batch work: fire many commands, ' +
+          'then read the replies with serial_read. Nothing is lost — the reply is still logged ' +
+          'and kept for /poll.',
+      },
     },
     output: {
       schema: {
@@ -385,15 +393,18 @@ export function apply(ctx, config = {}) {
           bytes: { type: 'integer' },
           empty: { type: 'boolean' },
           warning: { type: 'string', description: 'Present when the device stayed silent.' },
+          submitted: { type: 'boolean', description: 'True when wait=false: the bytes are out, the reply was not waited for.' },
+          submitMs: { type: 'integer', description: 'Time until the bytes were on the wire.' },
         },
       },
       render: (_args, value) => {
         const head = [`<scene>${value.scene}</scene>`, `<tx>${value.command}</tx>`, `<port>${value.port}</port>`];
         if (value.note) head.push(`<note>${value.note}</note>`);
-        const body = value.empty
-          ? '(无回显)'
-          : `${value.response}\n【hex】${value.responseHex}`;
+        const body = value.submitted
+          ? '（已发出，未等回显；用 serial_read 取回显）'
+          : (value.empty ? '(无回显)' : `${value.response}\n【hex】${value.responseHex}`);
         const lines = [...head, '<rx>', body, '</rx>'];
+        if (Number.isFinite(value.submitMs)) lines.push(`<submit_ms>${value.submitMs}</submit_ms>`);
         if (value.warning) lines.push(`<warning>${value.warning}</warning>`);
         return [{ type: 'text', text: lines.join('\n') }];
       },
@@ -406,7 +417,10 @@ export function apply(ctx, config = {}) {
       if (!scene) throw new Error('scene 不能为空，先用 serial_list 看有哪些场景');
       if (command.trim() === '') throw new Error('command 不能为空');
 
-      const data = await runCli(['send', '--scene', scene, '--command', command, '--as', 'ai']);
+      const wait = args?.wait !== false;      // 默认 true
+      const argv = ['send', '--scene', scene, '--command', command, '--as', 'ai'];
+      if (!wait) argv.push('--no-wait');
+      const data = await runCli(argv);
       return {
         scene: data.scene ?? scene,
         command: data.command ?? command,
@@ -417,6 +431,8 @@ export function apply(ctx, config = {}) {
         responseHex: data.response_hex ?? '',
         bytes: Number(data.bytes) || 0,
         empty: Boolean(data.empty),
+        ...(data.submitted ? { submitted: true } : {}),
+        ...(Number.isFinite(data.submit_ms) ? { submitMs: data.submit_ms } : {}),
         ...(data.warning ? { warning: data.warning } : {}),
       };
     },

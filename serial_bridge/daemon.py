@@ -176,6 +176,27 @@ class Daemon(object):
 
         if wait_ms is None:
             wait_ms = DEFAULT_REPLY_WAIT_MS
+
+        # wait_ms=0 表示"发完就走"：批量下命令时不必每条都等设备回话。
+        # 回显仍然会被读线程收进 buffer，之后用 /poll 或 serial_read 取。
+        if wait_ms <= 0:
+            return {
+                "scene": self.scene.name,
+                "command": text,
+                "mode": mode,
+                "port": self.resolved["device"] if self.resolved else "",
+                "transport": describe_transport(self.scene.cfg,
+                                                (self.resolved or {}).get("device")),
+                "response": "",
+                "response_hex": "",
+                "bytes": 0,
+                "submit_ms": submit_ms,
+                "elapsed_ms": int((time.time() - started) * 1000),
+                "empty": True,
+                "submitted": True,
+                "via": "daemon",
+            }
+
         # 等首字节 + 短安静；预算内收多少算多少，绝不拖到 1 秒
         deadline = time.time() + wait_ms / 1000.0
         quiet_until = 0.0
@@ -301,7 +322,8 @@ class Daemon(object):
     def poll(self, cursor=0, limit=65536):
         with self.lock:
             total = len(self.buffer)
-            cursor = max(0, min(int(cursor), total))
+            # cursor < 0 表示"只要从现在开始的新数据"（网页刚接上来时别倒历史）
+            cursor = total if int(cursor) < 0 else max(0, min(int(cursor), total))
             data = bytes(self.buffer[cursor:cursor + limit])
             next_cursor = cursor + len(data)
         return {
@@ -364,7 +386,8 @@ class _Handler(BaseHTTPRequestHandler):
                 result = self.daemon.send(
                     str(body.get("text") or ""),
                     str(body.get("mode") or "text"),
-                    str(body.get("actor") or "human"))
+                    str(body.get("actor") or "human"),
+                    wait_ms=body.get("wait_ms"))
                 return self._json({"ok": True, "data": result})
             if path == "/shutdown":
                 self._json({"ok": True})
