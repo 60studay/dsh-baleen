@@ -60,8 +60,26 @@
 | `serial_watch` | 读/改两个独立的监视开关（无需开网页） |
 | `serial_control` | 交接控制权（无需开网页） |
 
-**设计原则：不常驻、不占口。** 每次调用临时打开串口 → 收发 → 立刻关闭，
+**设计原则：默认不常驻、不占口。** 每次调用临时打开串口 → 收发 → 立刻关闭，
 不会和串口助手抢 COM 口。
+
+需要连发多条命令时，可以让 AI 起一个**管家**（常驻持有连接），见下节。
+
+## 管家（可选：常驻连接）
+
+```bash
+python bridge.py daemon --scene 蓝牙AT --action start   # 起（幂等，重复调不会起第二个）
+python bridge.py daemon --scene 蓝牙AT --action status
+python bridge.py daemon --scene 蓝牙AT --action stop
+```
+
+AI 侧对应工具 `serial_daemon`。
+
+- 管家在跑时，`serial_send` 自动走它（`via=daemon`），命令**提交耗时降到 0~2ms**
+- 端口在管家运行期间被占用，串口助手打不开；**空闲 10 分钟自动退出并释放**（`--idle` 可调）
+- 网页没开也照样能用——速度不取决于网页
+- 注意：**回包耗时仍受设备限制**。本仓库验证用的底盘首字节就要 500~600ms
+  （`X`/`H`/`A`/`P` 实测都一样），那是硬件，不是软件开销。
 
 ## v2 新增能力
 
@@ -320,6 +338,8 @@ dsh-whalesong\
 │   ├── ports.py                扫描 + 自动匹配
 │   ├── transport.py            传输层：Transport 接口 + SerialTransport（加新方式只加类）
 │   ├── io.py                   业务级收发（不 import pyserial，只调 Transport）
+│   ├── daemon.py               管家：常驻持有连接 + 本地 HTTP（/send /poll /status）
+│   ├── log.py                  TX/RX 日志（CLI 与管家共用）
 │   ├── rules.py                四种判据（纯判定，无设备语义）
 │   ├── runner.py               常驻判定子进程（超时可 kill）
 │   ├── state.py                跨进程控制权 + 告警
@@ -355,10 +375,11 @@ python selfcheck_autosend.py       # 14 项：定时发送 + 轻模式不占口�
 python selfcheck_hex.py            # 11 项：十六进制按原始字节发送（假回环，无需硬件）
 python selfcheck_paths.py          # 5 项：Python 与 JS 的默认日志目录必须一致（防 state 分叉）
 python selfcheck_transport.py      # 16 项：传输层抽象（换一种传输方式照样能收发）
+python selfcheck_daemon.py         # 10 项：管家的提交延迟 / 门禁 / 空闲退出 / 句柄释放（需要硬件）
 python selfcheck_watch.py          # 15 项：双开关独立性 / check_source / 规则出错不影响收发（需要硬件）
 ```
 
-前七个不需要串口，拔掉设备也能跑；`selfcheck_watch.py` 找不到设备时会打印 SKIP 并以 0 退出。
+前七个不需要串口，拔掉设备也能跑；`selfcheck_daemon.py` / `selfcheck_watch.py` 找不到设备时会打印 SKIP 并以 0 退出。
 
 ## 已知限制
 

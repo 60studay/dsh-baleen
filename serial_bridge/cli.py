@@ -85,29 +85,11 @@ def default_log_root():
 
 
 class Logger(object):
-    """按场景写 TX/RX 日志。行格式与 v1 兼容，老的日志文件继续可读。"""
+    """兼容旧引用：实现已移到 log.py（daemon 也要用，避免循环 import）。"""
 
-    def __init__(self, log_root, scene):
-        self.dir = os.path.join(log_root, scene)
-        self.path = os.path.join(self.dir, "log.txt")
-
-    def _ensure(self):
-        os.makedirs(self.dir, exist_ok=True)
-
-    def append(self, direction, text):
-        self._ensure()
-        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        with open(self.path, "a", encoding="utf-8") as handle:
-            for line in str(text).splitlines() or [""]:
-                handle.write("[%s] %s %s\n" % (stamp, direction, line))
-
-    def tail(self, lines):
-        try:
-            with open(self.path, encoding="utf-8", errors="replace") as handle:
-                data = handle.readlines()
-        except OSError:
-            data = []
-        return "".join(data[-max(1, int(lines)):]).rstrip("\n")
+    def __new__(cls, log_root, scene):
+        from .log import Logger as _Logger
+        return _Logger(log_root, scene)
 
 
 def _emit(data):
@@ -125,6 +107,44 @@ def _fail(error):
         "kind": "internal", "message": str(error)}
     _emit({"ok": False, "error": payload})
     return 1
+
+
+def _forward_to_daemon(paths, scene_name, command, actor):
+    """管家在跑就把命令交给它（三级降级的第一级）。
+
+    返回**已经组织好的 data dict**；管家没跑/不可达时返回 None，调用方继续降级。
+    管家返回的业务错误（控制权/格式）照原样抛出去，不能降级——那不是"连不上"。
+    """
+    from . import daemon as daemon_mod
+    info = daemon_mod.read_instance(paths, scene_name)
+    if not info:
+        return None
+    result = daemon_mod.request(info.get("url") or "", "/send",
+                                {"text": command, "mode": "text", "actor": actor},
+                                timeout=5.0)
+    if result is None:
+        return None                       # 管家死了/端口不通 → 降级
+    if not result.get("ok"):
+        err = result.get("error") or {}
+        raise BridgeError(err.get("kind") or "internal",
+                          err.get("message") or "管家拒绝了这个命令",
+                          hint=err.get("hint"))
+    payload = result.get("data") or {}
+    return {
+        "scene": scene_name,
+        "command": command,
+        "port": payload.get("port") or "",
+        "port_source": "daemon",
+        "note": "经由管家（常驻连接）",
+        "response": payload.get("response") or "",
+        "response_hex": payload.get("response_hex") or "",
+        "bytes": int(payload.get("bytes") or 0),
+        "submit_ms": int(payload.get("submit_ms") or 0),
+        "elapsed_ms": int(payload.get("elapsed_ms") or 0),
+        "empty": bool(payload.get("empty")),
+        "via": "daemon",
+        "transport": payload.get("transport"),
+    }
 
 
 def _forward_to_web(paths, scene_name, command, actor):
@@ -256,7 +276,12 @@ def cmd_send(paths, args):
                       "白名单为空时禁止一切自动命令"],
             )
 
-    # Bug 8：网页在跑时统一走它的 /send，这样用户能在页面上看到 AI 发了什么。
+    # 一级：管家在跑 → 走它（常驻连接，~几十毫秒）
+    via_daemon = _forward_to_daemon(paths, scene.name, args.command, actor)
+    if via_daemon is not None:
+        return _ok(via_daemon)
+
+    # 二级：网页在跑时统一走它的 /send，这样用户能在页面上看到 AI 发了什么。
     forwarded = _forward_to_web(paths, scene.name, args.command, actor)
     if forwarded is not None:
         if not forwarded.get("ok"):
@@ -384,6 +409,41 @@ def cmd_control(paths, args):
     return _ok({"scene": scene.name, "state": current})
 
 
+def cmd_daemon(paths, args):
+    """管家：常驻持有连接的独立进程（start / stop / status）。
+
+    start 是幂等的：已经在跑就返回现有 pid，不会起第二个。
+    """
+    from . import daemon as daemon_mod
+    scene = _scene(paths, args.scene)
+    port = int(args.port or daemon_mod.DEFAULT_PORT)
+    idle = int(args.idle or daemon_mod.DEFAULT_IDLE_S)
+    action = args.action
+
+    if action == "start":
+        status = daemon_mod.ensure_started(paths, scene.name, port=port, idle_s=idle)
+        current = status.get("status") if isinstance(status, dict) else None
+        return _ok({
+            "running": True,
+            "pid": (current or {}).get("pid") or status.get("pid"),
+            "url": status.get("url"),
+            "port": (current or status).get("port") or "",
+            "control": (current or status).get("control") or "",
+            "note": "管家已启动，占用 %s，期间串口助手打不开；空闲 %d 秒自动释放"
+                    % ((current or status).get("port") or "串口",
+                       (current or status).get("idle_timeout_s") or idle),
+            "transport": (current or status).get("transport"),
+        })
+
+    if action == "stop":
+        return _ok(daemon_mod.stop(paths, scene.name))
+
+    status = daemon_mod.running(paths, scene.name)
+    if not status:
+        return _ok({"running": False, "scene": scene.name})
+    return _ok(status)
+
+
 def cmd_watch(paths, args):
     """监视/轮询的开关与运行时状态。
 
@@ -487,6 +547,13 @@ def build_parser():
     web.add_argument("--mode", default="light", choices=["light", "watch"])
     web.add_argument("--open-browser", action="store_true")
 
+    daemon = sub.add_parser("daemon")
+    daemon.add_argument("--scene", required=True)
+    daemon.add_argument("--action", default="status",
+                        choices=["start", "stop", "status"])
+    daemon.add_argument("--port", type=int, default=0)
+    daemon.add_argument("--idle", type=int, default=0, help="空闲多少秒自动退出")
+
     return parser
 
 
@@ -506,6 +573,7 @@ def main(argv=None):
         "control": cmd_control,
         "watch": cmd_watch,
         "web": cmd_web,
+        "daemon": cmd_daemon,
     }[args.action_name]
     try:
         return handler(paths, args)
