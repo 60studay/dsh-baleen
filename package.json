@@ -1,8 +1,9 @@
 {
   "name": "dsh-whalesong",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "description": "通用串口工具：自动匹配端口、三类结构化错误、双开关监视与异常自动处置、控制权状态机",
   "main": "index.js",
   "exports": {
