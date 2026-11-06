@@ -1,0 +1,19 @@
+﻿{
+  "com": "",
+  "match": "CH340",
+  "match_vid_pid": "1A86:7523",
+  "baud": 9600,
+  "newline": "",
+  "watch": {
+    "send_enabled": false,
+    "check_enabled": false,
+    "check_source": "watch_only",
+    "command": "01 03 00 00 00 0A C5 CD",
+    "interval_ms": 2000,
+    "rules": [
+      { "name": "从站异常码", "when": { "type": "regex", "pattern": "^01 83" }, "then": { "send": "01 03 00 00 00 0A C5 CD" } },
+      { "name": "超时无响应", "when": { "type": "no_response", "consecutive": 5 }, "then": { "send": "01 03 00 00 00 0A C5 CD" } }
+    ],
+    "allowed_auto_commands": ["01 03 00 00 00 0A C5 CD"]
+  }
+}

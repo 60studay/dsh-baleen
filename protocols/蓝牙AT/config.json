@@ -1,0 +1,42 @@
+{
+  "com": "",
+  "match": "CH340",
+  "baud": 115200,
+  "newline": "\r\n",
+
+  "//": "底盘会在 OK 之后约 400ms 才异步报 [FAULT] stall，窗口小于这个间隔就会漏掉故障。实测 2026-11-05。",
+  "quiet_ms": 600,
+
+  "no_response_hint": [
+    "先发 AT：如果回 OK，说明主机还卡在自己的 AT 模式（没进透传）",
+    "这时发 AT+RESET，然后【关闭串口】等 20 秒，让它自己连从机",
+    "别只查波特率和接线——AT 模式没退出时，波特率再对也没用"
+  ],
+
+  "watch": {
+    "send_enabled": false,
+    "check_enabled": false,
+    "check_source": "watch_only",
+    "command": "P",
+    "interval_ms": 1000,
+    "timeout_ms": 800,
+    "max_consecutive_failures": 3,
+
+    "rules": [
+      {
+        "name": "堵转保护触发",
+        "when": { "type": "contains", "value": "FAULT" },
+        "then": { "send": "R", "max_retries": 3 },
+        "notify": true
+      },
+      {
+        "name": "失联",
+        "when": { "type": "no_response", "consecutive": 3 },
+        "then": { "send": "X", "max_retries": 1 },
+        "notify": true
+      }
+    ],
+
+    "allowed_auto_commands": ["R", "X", "Z", "P"]
+  }
+}

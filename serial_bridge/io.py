@@ -1,0 +1,264 @@
+# -*- coding: utf-8 -*-
+"""串口收发核心。
+
+保持 v1 的两个好设计：
+- **不常驻、不占口**：每次调用临时开串口 → 收发 → 关闭
+- **回包节奏**：先等首字节（设备可能要想一会儿才回）→ 再等线路安静
+
+v2 新增：
+- 三类故障分开报（未连接 / 被占用 / 无响应），见 errors.py
+- 收发统一返回原始 bytes，hex 由上层渲染（3.4 要求"不要后端先解码再转，会丢数据"）
+"""
+
+import time
+
+from .errors import BridgeError
+from .ports import resolve_port
+
+
+def _load_serial():
+    try:
+        import serial
+        return serial
+    except ImportError:
+        raise BridgeError(
+            "config",
+            "pyserial 没有加载成功。",
+            hint=[
+                "插件自带的 pyserial 在 vendor/pyserial-3.5",
+                "若手工运行，请设置 PYTHONPATH 指向该目录",
+            ],
+        )
+
+
+def decode_newline(value, default="\\r\\n"):
+    """把配置里的 "\\r\\n" 这类转义串变成真正的字节。"""
+    text = value if isinstance(value, str) else default
+    try:
+        return text.encode("utf-8").decode("unicode_escape").encode("latin1")
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return b"\r\n"
+
+
+def open_port(cfg, device, baud=None):
+    """打开串口；失败时按"被占用/其他"分类，绝不把堆栈抛出去。"""
+    serial = _load_serial()
+    try:
+        port = serial.Serial(
+            port=device,
+            baudrate=int(baud or cfg.get("baud") or 115200),
+            bytesize=int(cfg.get("bytesize", 8)),
+            parity=cfg.get("parity", "N"),
+            stopbits=float(cfg.get("stopbits", 1)),
+            timeout=0.02,
+        )
+    except Exception as exc:  # pyserial 的异常类型在 Windows 上五花八门
+        message = str(exc)
+        lowered = message.lower()
+        busy_markers = ("access is denied", "permissionerror", "拒绝访问", "being used",
+                        "cannot open", "could not open")
+        if any(marker in lowered for marker in busy_markers):
+            raise BridgeError(
+                "port_busy",
+                "%s 被其他程序占用。" % device,
+                hint=[
+                    "串口助手 / 其他串口工具是否开着",
+                    "网页监视模式（watch 模式）是否正在运行",
+                    "上一次的 bridge.py 是否还没退出",
+                ],
+                detail=message,
+            )
+        if "filenotfound" in lowered or "系统找不到" in message or "找不到" in message:
+            raise BridgeError(
+                "no_device",
+                "%s 打不开：系统里没有这个串口。" % device,
+                hint=["USB 是否被拔掉", "拔插后串口号可能已变化，重新扫描一次"],
+                detail=message,
+            )
+        raise BridgeError(
+            "internal",
+            "打开 %s 失败。" % device,
+            hint=["换一个 USB 口试试", "确认驱动装好"],
+            detail=message,
+        )
+
+    # 很多开发板（ESP32 / Arduino / STM32 最小系统）把 DTR/RTS 接到复位或 BOOT 脚，
+    # 打开串口时这两根线默认拉高会误触发复位。这是通用问题，不是某块板专用。
+    # 必须在 open() 之后赋值：构造参数里传 dtr=False 无效（实测打开后仍是 True）。
+    try:
+        port.dtr = False
+        port.rts = False
+    except Exception:
+        pass
+    return port
+
+
+def _open_with_retry(cfg, device, baud=None, attempts=3, gap_s=0.25):
+    """打开串口，遇到"被占用"时短暂重试。
+
+    为什么需要：同一个口可能被另一个客户端瞬间占用——最常见的是网页的
+    定时发送线程刚好在开关口，或者用户的串口助手刚点开一下。
+    这种瞬时冲突重试几次就过去了，直接报错反而像"插件坏了"。
+    真被长期占用时三次都失败再报，文案仍是"被占用 + 该关掉谁"。
+    """
+    last = None
+    for index in range(max(1, attempts)):
+        try:
+            return open_port(cfg, device, baud)
+        except BridgeError as exc:
+            if exc.kind != "port_busy":
+                raise
+            last = exc
+            if index < attempts - 1:
+                time.sleep(gap_s)
+    raise last
+
+
+def transact(cfg, device, payload, baud=None):
+    """发一条命令并读回显。
+
+    返回 dict：
+      tx           原始发送文本
+      rx_bytes     原始回显 bytes
+      rx_text      UTF-8 解码（errors=replace），给"文字模式"
+      rx_hex       空格分隔的十六进制，给"十六进制模式"
+      bytes        回显字节数
+      elapsed_ms   本次耗时
+      empty        是否没收到任何字节
+
+    读不到任何字节不算异常（很多命令本来就不回应），由上层决定是否报
+    "设备无响应"——所以这里只回报事实。
+    """
+    first_byte_ms = int(cfg.get("wait_first_byte_ms", 1500))
+    quiet_ms = int(cfg.get("quiet_ms", 200))
+    gap_ms = int(cfg.get("timeout_read_ms", 500))
+    newline = decode_newline(cfg.get("newline"), "\\r\\n")
+
+    started = time.time()
+    ser = _open_with_retry(cfg, device, baud)
+    try:
+        ser.reset_input_buffer()
+        ser.write(str(payload).encode("utf-8") + newline)
+        out = b""
+        t0 = time.time()
+        last_byte = None
+        while True:
+            chunk = ser.read(256)
+            now = time.time()
+            if chunk:
+                out += chunk
+                last_byte = now
+                continue
+            if last_byte is None:
+                if (now - t0) * 1000 >= first_byte_ms:
+                    break
+            elif (now - last_byte) * 1000 >= quiet_ms:
+                break
+            if (now - t0) * 1000 >= first_byte_ms + gap_ms:
+                break
+            time.sleep(0.01)
+        return {
+            "tx": str(payload),
+            "rx_bytes": out,
+            "rx_text": out.decode("utf-8", errors="replace"),
+            "rx_hex": " ".join("%02X" % byte for byte in out),
+            "bytes": len(out),
+            "elapsed_ms": int((time.time() - started) * 1000),
+            "empty": len(out) == 0,
+        }
+    except BridgeError:
+        raise
+    except Exception as exc:
+        raise BridgeError(
+            "internal",
+            "读写 %s 时出错。" % device,
+            hint=["设备可能被拔掉", "换条 USB 线试试"],
+            detail=str(exc),
+        )
+    finally:
+        try:
+            ser.close()
+        except Exception:
+            pass
+
+
+def drain(cfg, device, duration_ms=400, baud=None):
+    """只读不发：短暂开一次口，尽可能收干净。
+
+    网页"轻模式"的 /poll 用它——不长期占口，但也能捡到设备主动上报的数据
+    （代价是两次 poll 之间的数据仍可能漏，这点在文档里已如实说明）。
+    """
+    serial = _load_serial()
+    first_byte_ms = int(cfg.get("wait_first_byte_ms", 1500))
+    quiet_ms = int(cfg.get("quiet_ms", 200))
+    budget_ms = max(int(duration_ms), first_byte_ms)
+
+    started = time.time()
+    ser = _open_with_retry(cfg, device, baud)
+    try:
+        out = b""
+        t0 = time.time()
+        last_byte = None
+        while True:
+            chunk = ser.read(256)
+            now = time.time()
+            if chunk:
+                out += chunk
+                last_byte = now
+                continue
+            if last_byte is None:
+                if (now - t0) * 1000 >= budget_ms:
+                    break
+            elif (now - last_byte) * 1000 >= quiet_ms:
+                break
+            if (now - t0) * 1000 >= budget_ms:
+                break
+            time.sleep(0.01)
+        return {
+            "rx_bytes": out,
+            "rx_text": out.decode("utf-8", errors="replace"),
+            "rx_hex": " ".join("%02X" % byte for byte in out),
+            "bytes": len(out),
+            "elapsed_ms": int((time.time() - started) * 1000),
+        }
+    finally:
+        try:
+            ser.close()
+        except Exception:
+            pass
+
+
+def open_and_check(cfg, baud=None):
+    """只验证"能不能打开"，立刻关掉。用于状态显示与占用检测。"""
+    resolved = resolve_port(cfg)
+    ser = open_port(cfg, resolved["device"], baud)
+    ser.close()
+    return resolved
+
+
+def describe_no_response(resolved, cfg, baud=None):
+    """打开了但没回显 → 生成 3.2 要求的"设备无响应"提示。
+
+    除了通用检查项，还带上场景配置里的 `no_response_hint`：
+    不同硬件的"没回显"原因千差万别（例如某些透传模块会卡在自己的命令模式里），
+    这类知识属于设备，写在 protocols/<场景>/config.json，代码保持通用。
+    """
+    hints = [
+        "波特率是否正确（当前 %s）" % int(baud or cfg.get("baud") or 115200),
+        "设备是否上电",
+        "TX/RX 是否接反",
+        "命令是否需要换行结尾（当前 newline=%r）" % cfg.get("newline", "\\r\\n"),
+    ]
+    extra = cfg.get("no_response_hint")
+    if isinstance(extra, str):
+        extra = [extra]
+    if isinstance(extra, (list, tuple)):
+        for item in extra:
+            text = str(item or "").strip()
+            if text:
+                hints.append(text)
+    return BridgeError(
+        "no_response",
+        "已连接 %s，但设备无响应。" % resolved["device"],
+        hint=hints,
+    )

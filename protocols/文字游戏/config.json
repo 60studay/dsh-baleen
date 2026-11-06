@@ -1,0 +1,15 @@
+{
+  "com": "",
+  "baud": 115200,
+  "newline": "",
+
+  "watch": {
+    "send_enabled": false,
+    "check_enabled": false,
+    "check_source": "watch_only",
+    "command": "",
+    "interval_ms": 2000,
+    "rules": [],
+    "allowed_auto_commands": []
+  }
+}

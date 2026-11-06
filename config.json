@@ -1,0 +1,26 @@
+{
+  "com": "",
+  "baud": 115200,
+  "bytesize": 8,
+  "parity": "N",
+  "stopbits": 1,
+  "timeout_read_ms": 800,
+  "wait_first_byte_ms": 1500,
+  "quiet_ms": 200,
+  "newline": "\\r\\n",
+  "web_port": 8898,
+  "log_root": "",
+  "watch": {
+    "send_enabled": false,
+    "check_enabled": false,
+    "check_source": "watch_only",
+    "command": "",
+    "interval_ms": 1000,
+    "timeout_ms": 800,
+    "max_consecutive_failures": 3,
+    "rule_timeout_ms": 500,
+    "rule_cooldown_s": 5,
+    "rules": [],
+    "allowed_auto_commands": []
+  }
+}

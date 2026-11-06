@@ -1,0 +1,39 @@
+# ── Python ──────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+
+# ── 测试与运行产物 ───────────────────────────────────
+_testlogs/
+.serial-logs/
+*.log
+
+# ── 本机数据（含设备信息，不入库）─────────────────────
+_模块配置备份/
+*.web.json
+.runtime/
+alerts.jsonl
+
+# ── 编辑器 / 系统 ────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── 临时文件 ─────────────────────────────────────────
+*.tmp
+*.bak
+_scan.py
+_sanitize.py
+_verify.py
+_v2.py
+_chk*.py

@@ -1,0 +1,41 @@
+{
+  "name": "dsh-serial-bridge",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "通用串口工具：自动匹配端口、三类结构化错误、双开关监视与异常自动处置、控制权状态机",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "bridge.py",
+    "config.json",
+    "cordis.patch.yml",
+    "package.json",
+    "README.md",
+    "LICENSE",
+    "icon.svg",
+    "locale/*.json",
+    "serial_bridge/**/*.py",
+    "web/index.html",
+    "protocols/**",
+    "vendor/**"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "meta": {
+    "title": "串口桥",
+    "description": "让 AI 直接控制串口设备（AT 模块 / 底盘控制器 / Modbus / 任何 UART 设备）"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
