@@ -15,14 +15,17 @@ import json
 import os
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from http.server import ThreadingHTTPServer
 import urllib.request
 
 from . import io as serial_io
 from .config import load_scene
 from .errors import BridgeError
 from .ports import resolve_port, scan_ports
+from .port_manager import PortManager
+from .rule_checker import RuleChecker
+from .watch_loop import WatchLoop
+from .web_handler import BridgeHandler
 from .rules import RULE_TYPES
 from .runner import RuleWorker
 from .state import SharedState, STATE_AI, STATE_HUMAN, STATE_PAUSED, VALID_STATES, _safe_name
@@ -31,359 +34,6 @@ from .transport import describe_transport as transport_describe
 BAUD_CHOICES = [9600, 19200, 38400, 57600, 74880, 115200, 230400, 250000, 460800, 921600]
 DEFAULT_PORT = 8899
 
-
-class WatchLoop(object):
-    """watch 模式的常驻读取线程。
-
-    两个开关在这里也是独立的：
-      定时发送线程（send_enabled）负责写
-      判定（check_enabled）在数据到达时同步跑，但有规则级超时保护
-    任一线程出错都不影响另一个；规则引擎出错更不会影响读口。
-    """
-
-    def __init__(self, scene, paths, state, logger):
-        self.scene = scene
-        self.paths = paths
-        self.state = state
-        self.logger = logger
-        self.ser = None
-        self.thread = None
-        self.send_thread = None
-        self.stop_event = threading.Event()
-        self.buffer = bytearray()
-        self.lock = threading.Lock()
-        # 自动发送的"发送记录"：网页靠它显示 `>> 命令` + 回显
-        self.auto_frames = []
-        # 串口互斥：定时发送线程、手动 /send、/poll 读一次，三路都要开关同一个口。
-        # 不加锁会自己跟自己抢出 "被占用"（真机实测复现）。
-        self.port_lock = threading.Lock()
-        self.no_response_streak = 0
-        self.last_error = None
-        self.device = ""
-        self.running = False
-        # 熔断：连续判定失败达阈值后停掉判定（不影响收发）
-        self._checks_stopped = False
-        self._check_failures = 0
-        # 判定跑在常驻子进程里：卡住能杀掉，出错不冒泡（见 runner.py）
-        self._rule_worker = None
-
-    def start(self, device, baud):
-        self.stop()
-        self.device = device
-        self.baud = baud
-        self.ser = serial_io.open_port(self.scene.cfg, device, baud)
-        self.stop_event.clear()
-        self.running = True
-        self.thread = threading.Thread(target=self._read_loop, name="watch-read", daemon=True)
-        self.thread.start()
-        self.send_thread = threading.Thread(target=self._send_loop, name="watch-send", daemon=True)
-        self.send_thread.start()
-
-    def stop(self):
-        self.running = False
-        self.stop_event.set()
-        for thread in (self.thread, self.send_thread):
-            if thread is not None and thread.is_alive():
-                thread.join(timeout=2.0)
-        self.thread = None
-        self.send_thread = None
-        if self._rule_worker is not None:
-            self._rule_worker.close()
-            self._rule_worker = None
-        if self.ser is not None:
-            try:
-                self.ser.close()
-            except Exception:
-                pass
-            self.ser = None
-
-    def take(self):
-        with self.lock:
-            data = bytes(self.buffer)
-            self.buffer.clear()
-            return data
-
-    def send_raw(self, command, raw_bytes=None):
-        """发一条命令并返回回显文本。
-
-        持有句柄就写句柄（监视模式）；没持有就临时开口（轻模式）。
-        定时发送和"规则自动处置"都走这里，所以两种模式行为一致。
-
-        raw_bytes 不为 None 时按原始字节发送（hex 场景的命令），两条路径都要尊重它。
-
-        每次发送都会往 auto_frames 里记一帧，网页据此显示
-        `>> 命令` + 回显——否则自动发送的内容只进日志，用户在页面上看不到（Bug 4）。
-        """
-        cfg = self.scene.cfg
-        newline = serial_io.decode_newline(cfg.get("newline"), "\\r\\n")
-        if self.running and self.ser is not None:
-            # 原始字节模式不补换行，帧由调用方给全（见 io.transact 的说明）
-            if raw_bytes is not None:
-                self.ser.write(raw_bytes)
-            else:
-                self.ser.write(str(command).encode("utf-8") + newline)
-            self.logger.append("TX", command)
-            # 监视模式：回显走读线程进 buffer，这里只记"发了什么"
-            self._push_frame(command, "", "", 0)
-            return ""
-        resolved = resolve_port(cfg)
-        with self.port_lock:
-            result = serial_io.transact(cfg, resolved["device"], command,
-                                        raw_bytes=raw_bytes)
-        self.logger.append("TX", command)
-        if result["rx_text"]:
-            self.logger.append("RX", result["rx_text"])
-        self._push_frame(command, result["rx_text"], result["rx_hex"], result["bytes"])
-        # 轻模式的自动发送也要更新"无回显计数"，否则 no_response 规则永远不触发
-        if result["empty"]:
-            self.no_response_streak += 1
-        else:
-            self.no_response_streak = 0
-        return result["rx_text"]
-
-    def _push_frame(self, tx, rx, rx_hex, nbytes, source="auto"):
-        with self.lock:
-            self.auto_frames.append({
-                "tx": tx, "rx": rx, "hex": rx_hex,
-                "bytes": int(nbytes or 0), "ts": time.time(), "source": source,
-            })
-            if len(self.auto_frames) > 200:
-                del self.auto_frames[:-200]
-
-    def take_frames(self):
-        """取走待显示的自动发送帧。"""
-        with self.lock:
-            frames = list(self.auto_frames)
-            self.auto_frames.clear()
-            return frames
-
-    def _read_loop(self):
-        while not self.stop_event.is_set():
-            try:
-                chunk = self.ser.read(512)
-            except Exception as exc:
-                self.last_error = str(exc)
-                time.sleep(0.2)
-                continue
-            if not chunk:
-                continue
-            with self.lock:
-                self.buffer.extend(chunk)
-            text = chunk.decode("utf-8", errors="replace")
-            self.logger.append("RX", text)
-            self.no_response_streak = 0
-            # 刚手动/网页发过命令 → 这段回显算 manual，否则算轮询 watch
-            source = "manual" if time.time() < self._manual_until else "watch"
-            self._run_checks(text, source)
-
-    def _send_loop(self):
-        """（已停用）定时发送现在由 WebServer._autosend_loop 统一负责。
-
-        原因：这个循环只活在 WatchLoop 里，而 WatchLoop 只在"监视模式 + 控制权 ai"
-        时才启动。于是 light 模式下把 send_enabled 打开，watch_running 永远是 false、
-        一条命令也发不出去（Bug 4）。定时发送属于"用户配置的自动化"，不该依赖
-        网页是不是在占口，所以搬到 WebServer 层，两种模式都能跑。
-        """
-        return
-
-
-    def _watch_settings(self):
-        return self.state.read().get("watch") or {}
-
-    def _run_checks(self, text, source):
-        """判定入口：完全受 check_enabled 控制，且绝不向上抛异常。
-
-        判定跑在**子进程**里（runner.evaluate_isolated），所以：
-        - 灾难性回溯的正则会被 terminate 掉，不会卡住读线程
-        - 非法正则/字段缺失只让这一批规则作废，收发照常
-        """
-        watch = self._watch_settings()
-        if not watch.get("check_enabled"):
-            return
-        check_source = str(watch.get("check_source") or "watch_only")
-        if check_source == "watch_only" and source != "watch":
-            return
-        if check_source == "manual_only" and source != "manual":
-            return
-        if self._checks_stopped:
-            return
-        try:
-            cfg = {**self.scene.watch_cfg(), **watch}
-            if self._rule_worker is None:
-                # 注意：这个超时是"等判定子进程回一行 JSON"的预算，必须覆盖
-                # 一次进程冷启动（实测 ~250ms），不能用单条规则的 100ms 语义。
-                self._rule_worker = RuleWorker(
-                    timeout_ms=int(cfg.get("rule_worker_timeout_ms") or 2000))
-            results, error = self._rule_worker.evaluate(
-                text, cfg, self.no_response_streak, source)
-            if error:
-                self.logger.append("RULE", "判定已跳过：%s" % error)
-                self._note_check_failure(error)
-            else:
-                self._check_failures = 0
-            for result in results:
-                if result.get("error"):
-                    self.logger.append("RULE", "规则 %s 出错: %s"
-                                       % (result.get("rule"), result.get("error")))
-                    continue
-                if not result.get("matched"):
-                    continue
-                action = result.get("action") or {}
-                command = str(action.get("send") or "").strip()
-                record = {
-                    "rule": result.get("rule"),
-                    "reason": result.get("reason"),
-                    "source": source,
-                    "response": text[:400],
-                    "action": command or "(仅通知)",
-                }
-                if command:
-                    try:
-                        self.send_raw(command)
-                        record["sent"] = True
-                    except Exception as exc:
-                        record["sent"] = False
-                        record["send_error"] = str(exc)
-                self.state.append_alert(record)
-        except Exception as exc:  # 判定再怎么炸也不许拖垮收发
-            self.logger.append("RULE", "判定异常已忽略: %s" % exc)
-
-    def _note_check_failure(self, reason):
-        """连续判定失败 → 停判定并记一条大警告（收发完全不受影响）。"""
-        self._check_failures += 1
-        limit = int(self.scene.watch_cfg().get("max_consecutive_failures") or 3)
-        if self._check_failures >= limit and not self._checks_stopped:
-            self._checks_stopped = True
-            self.logger.append("RULE", "连续 %d 次判定失败，已停止判定：%s"
-                               % (self._check_failures, reason))
-            self.state.append_alert({
-                "rule": "(判定熔断)",
-                "reason": "连续 %d 次判定失败，已自动停止判定；串口收发不受影响" % self._check_failures,
-                "source": "watch",
-                "response": "",
-                "action": "(已停止判定)",
-            })
-
-
-class BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "SerialBridge/2.0"
-
-    # ── 基础设施 ────────────────────────────────────────────────────────────
-    @property
-    def ctx(self):
-        return self.server.context
-
-    def log_message(self, *args):
-        pass  # 静音，日志我们自己写
-
-    def _send(self, status, body, content_type="application/json; charset=utf-8"):
-        payload = body if isinstance(body, bytes) else str(body).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        try:
-            self.wfile.write(payload)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-
-    def _json(self, data, status=200):
-        self._send(status, json.dumps(data, ensure_ascii=False), "application/json; charset=utf-8")
-
-    def _error(self, exc, status=400):
-        data = exc.to_dict() if isinstance(exc, BridgeError) else {
-            "kind": "internal", "message": str(exc)}
-        self._json({"ok": False, "error": data}, status)
-
-    def _body(self):
-        length = int(self.headers.get("Content-Length") or 0)
-        if not length:
-            return {}
-        raw = self.rfile.read(length).decode("utf-8", errors="replace")
-        try:
-            return json.loads(raw)
-        except ValueError:
-            return {"raw": raw}
-
-    # ── 路由 ────────────────────────────────────────────────────────────────
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        path = parsed.path
-        query = parse_qs(parsed.query)
-        try:
-            if path in ("/", "/index.html"):
-                html = self.ctx["page"]
-                return self._send(200, html, "text/html; charset=utf-8")
-            if path == "/status":
-                return self._json(self.ctx["status"]())
-            if path == "/poll":
-                force = (query.get("force") or ["0"])[0] in ("1", "true", "yes")
-                return self._json(self.ctx["poll"](force))
-            if path == "/alerts":
-                limit = int((query.get("limit") or ["20"])[0])
-                return self._json({"ok": True, "alerts": self.ctx["alerts"](limit)})
-            if path == "/ports":
-                return self._json({"ok": True, "ports": scan_ports(),
-                                   "bauds": BAUD_CHOICES})
-            if path == "/rules":
-                return self._json(self.ctx["get_rules"]())
-            if path == "/favicon.ico":
-                return self._send(204, b"")
-            return self._json({"ok": False, "error": {"kind": "not_found",
-                                                      "message": path}}, 404)
-        except BridgeError as exc:
-            return self._error(exc)
-        except Exception as exc:
-            return self._error(exc, 500)
-
-    def do_POST(self):
-        path = urlparse(self.path).path
-        try:
-            body = self._body()
-            if path == "/send":
-                return self._json(self.ctx["send"](
-                    str(body.get("text") or ""),
-                    str(body.get("mode") or "text"),
-                    str(body.get("actor") or "human"),
-                    str(body.get("source") or "web"),
-                ))
-            if path == "/control":
-                # 缺字段/未知动作都用 400，但必须说清楚是哪一种
-                action = str(body.get("action") or "").strip()
-                if not action:
-                    raise BridgeError(
-                        "config",
-                        "/control 需要一个 action 字段。",
-                        hint=['请求体示例：{"action": "human"}',
-                              "可选值：ai / pause / resume / human"],
-                    )
-                return self._json(self.ctx["control"](action))
-            if path == "/watch":
-                return self._json(self.ctx["set_watch"](body))
-            if path == "/rules":
-                return self._json(self.ctx["set_rules"](body))
-            if path == "/port/pause":
-                return self._json(self.ctx["pause_port"]())
-            if path == "/port/resume":
-                return self._json(self.ctx["resume_port"]())
-            if path == "/reconnect":
-                return self._json(self.ctx["reconnect"](
-                    str(body.get("com") or ""), int(body.get("baud") or 0)))
-            if path == "/autodetect":
-                return self._json(self.ctx["autodetect"]())
-            if path == "/mode":
-                return self._json(self.ctx["set_mode"](str(body.get("mode") or "light")))
-            if path == "/shutdown":
-                self._json({"ok": True, "shutdown": True})
-                self.ctx["request_shutdown"]()
-                return None
-            return self._json({"ok": False, "error": {"kind": "not_found",
-                                                      "message": path}}, 404)
-        except BridgeError as exc:
-            return self._error(exc)
-        except Exception as exc:
-            return self._error(exc, 500)
 
 
 class WebServer(object):
@@ -401,17 +51,21 @@ class WebServer(object):
         self.shutdown_event = threading.Event()
         self.override_com = ""
         self.override_baud = 0
-        # 因控制权让位而主动放开串口时，记一句原因（网页上显示）
-        self.hold_released_reason = ""
-        # 上次收敛时的控制权，供 reconcile_port 判断"状态是否被外部改了"
-        self._last_control = None
-        self.last_reconcile = None
+        # 端口占用/释放/看门狗都交给 PortManager（它不碰界面，只管"谁该拿口"）
+        self.ports = PortManager(
+            state=self.state,
+            loop=self.loop,
+            current_device=self.current_device,
+            effective_cfg=self.effective_cfg,
+            mode_getter=lambda: self.mode,
+            shutdown_event=self.shutdown_event,
+            daemon_url=self._daemon_url,
+        )
         # 监视模式下"刚手动发过命令"的时间窗，用来把回显来源标成 manual
         self._manual_until = 0.0
         # 定时发送（独立于串口占用/模式，见 _autosend_loop）
         self._autosend_thread = None
         self.autosend_stats = {"sent": 0, "errors": 0, "last_error": "", "last_tx": 0.0}
-        self._port_owner_cache = {"at": 0.0, "value": None}
         # 单实例守卫：同一场景同时只允许一个网页实例，避免两个进程抢串口
         self._instance_file = os.path.join(paths["runtime_root"], "state",
                                            "%s.web.json" % _safe_name(scene_name))
@@ -437,13 +91,6 @@ class WebServer(object):
     #   human   → 口要还给用户（他要开串口助手），网页一律不持有
     #   paused  → 谁都不发，口也还回去
     # 轻模式下本来就不常占口，这里主要影响 watch 模式。
-
-    def _should_hold_port(self, control=None):
-        # 管家在跑时绝不由网页再拿一次口——两个持有者必然抢口
-        if self._daemon_url():
-            return False
-        state = (control or self.state.read().get("state") or "human")
-        return self.mode == "watch" and state == "ai"
 
     # ── 管家（可选）─────────────────────────────────────────────────────────
     def _daemon_url(self):
@@ -495,105 +142,6 @@ class WebServer(object):
             "note": "经由管家（常驻连接）",
         }
 
-    def _release_port_if_idle(self, reason=""):
-        """按当前控制权决定是否放开串口。返回是否真的放开了。"""
-        if self.loop.running and not self._should_hold_port():
-            self.loop.stop()
-            self.hold_released_reason = reason or "控制权不在 AI"
-            return True
-        return False
-
-    def _acquire_port_if_needed(self):
-        """控制权回到 ai 时重新拿口（watch 模式才需要）。"""
-        if self.mode != "watch" or self.loop.running:
-            return False
-        resolved = self.current_device()
-        self.loop.start(resolved["device"],
-                        int(self.effective_cfg().get("baud") or 115200))
-        self.hold_released_reason = ""
-        return True
-
-    def reconcile_port(self, trigger="change"):
-        """让串口占用对齐当前控制权——**唯一的收敛点**。
-
-        为什么需要它：控制权存在共享文件里，改它的路径有三条
-          1. 网页按钮 POST /control
-          2. serial_control 工具（CLI 子进程）
-          3. 人类在别处跑 bridge.py control
-        只有第 1 条会顺手调 release/acquire。如果只在按钮里做，
-        CLI 把状态改成 human 时网页仍攥着口——这正是实测反馈的场景。
-
-        所以释放/获取不挂在"谁改了状态"上，而是挂在"状态变了"这件事上：
-        看门狗每秒比对一次，发现控制权或模式变了就收敛一次。
-        """
-        try:
-            current = self.state.read().get("state") or "human"
-        except Exception:
-            return None
-        previous = self._last_control
-        if previous == current and trigger != "force":
-            return None
-        self._last_control = current
-
-        action = "unchanged"
-        try:
-            if current == STATE_AI:
-                if self._acquire_port_if_needed():
-                    action = "acquired"
-            else:
-                label = "控制权切到 %s" % current
-                if self._release_port_if_idle(label):
-                    action = "released"
-        except BridgeError as exc:
-            action = "failed: %s" % exc.message
-            self.loop.last_error = exc.message
-        self.last_reconcile = {"action": action, "control": current, "trigger": trigger}
-        return self.last_reconcile
-
-    def _port_watchdog(self):
-        """每秒看一次控制权是否被别人改了；变了就收敛串口占用。"""
-        while not self.shutdown_event.is_set():
-            try:
-                self.reconcile_port("watchdog")
-            except Exception:
-                pass
-            self.shutdown_event.wait(1.0)
-
-    def port_owner(self):
-        """谁占着这个口：ours / other / free。用于网页状态栏。
-
-        探测本身要临时开一次口，所以缓存 5 秒：网页每 700ms 拉一次 /status，
-        不缓存就变成"状态栏自己在占口"。
-        """
-        now = time.time()
-        cached = self._port_owner_cache.get("value")
-        if cached is not None and (now - self._port_owner_cache.get("at", 0)) < 5.0:
-            return cached
-        device = ""
-        try:
-            device = self.current_device()["device"]
-        except BridgeError:
-            value = {"owner": "unknown", "device": "", "detail": "串口未解析出来"}
-            self._port_owner_cache = {"at": now, "value": value}
-            return value
-        if self.loop.running and self.loop.ser is not None:
-            value = {"owner": "ours", "device": device,
-                     "detail": "本网页的监视模式正持有 %s" % device}
-            self._port_owner_cache = {"at": now, "value": value}
-            return value
-        try:
-            with self.loop.port_lock:
-                serial_io.open_and_check(self.effective_cfg())
-            value = {"owner": "free", "device": device, "detail": "%s 空闲，可用" % device}
-        except BridgeError as exc:
-            if exc.kind == "port_busy":
-                value = {"owner": "other", "device": device,
-                         "detail": "被其他程序占用（串口助手/其他终端工具）"}
-            else:
-                value = {"owner": "unknown", "device": device, "detail": exc.message}
-        self._port_owner_cache = {"at": now, "value": value}
-        return value
-
     # ── 状态 ────────────────────────────────────────────────────────────────
     def status(self):
         current = self.state.read()
@@ -617,7 +165,7 @@ class WebServer(object):
             "alerts": self.state.read_alerts(5),
             "port": current.get("port") or "",
             "baud": current.get("baud") or int(self.effective_cfg().get("baud") or 0),
-            "hold_released_reason": self.hold_released_reason,
+            "hold_released_reason": self.ports.hold_released_reason,
             "state_path": self.state.path,
         }
         try:
@@ -631,7 +179,7 @@ class WebServer(object):
             data["resolved"] = None
             data["resolve_error"] = exc.to_dict()
             data["transport"] = transport_describe(self.effective_cfg())
-        data["port_owner"] = self.port_owner()
+        data["port_owner"] = self.ports.owner()
         return data
 
     def poll(self, force=False):
@@ -836,7 +384,7 @@ class WebServer(object):
 
         # 控制权一变，串口占用跟着变。走统一的收敛点，
         # 和看门狗、CLI、serial_control 工具用的是同一段逻辑。
-        forced = self.reconcile_port("web-control") or {}
+        forced = self.ports.reconcile("web-control") or {}
         port_action = forced.get("action", "unchanged")
 
         return {
@@ -1017,21 +565,21 @@ class WebServer(object):
             else:
                 self.mode = mode
                 self.loop.stop()                    # 网页不再持口
-                self.hold_released_reason = "由管家持有（监视模式）"
+                self.ports.hold_released_reason = "由管家持有（监视模式）"
                 return {"ok": True, "mode": self.mode, "watch_running": True,
                         "via": "daemon"}
 
         if mode == "watch":
             # 切监视模式也遵守控制权：控制权不在 AI 就先不抢口
             self.mode = "watch"
-            if self._should_hold_port():
-                self._acquire_port_if_needed()
+            if self.ports.should_hold():
+                self.ports.acquire_if_needed()
             else:
-                self.hold_released_reason = "控制权不在 AI，监视模式暂不占口"
+                self.ports.hold_released_reason = "控制权不在 AI，监视模式暂不占口"
         else:
             self.loop.stop()
             self.mode = "light"
-            self.hold_released_reason = ""
+            self.ports.hold_released_reason = ""
         return {"ok": True, "mode": self.mode, "watch_running": self.loop.running}
 
     # ── 暂停（网页留着） vs 退出（网页也关）───────────────────────────────
@@ -1039,18 +587,18 @@ class WebServer(object):
         """暂停：释放串口，但网页继续可访问。想临时用串口助手时点这个。"""
         if self.loop.running:
             self.loop.stop()
-        self.hold_released_reason = "已手动暂停，串口已释放"
+        self.ports.hold_released_reason = "已手动暂停，串口已释放"
         return {"ok": True, "paused": True, "watch_running": self.loop.running,
-                "port_owner": self.port_owner()}
+                "port_owner": self.ports.owner()}
 
     def resume_port(self):
         """从"暂停"恢复占用（只有控制权在 AI 且是 watch 模式才真的占口）。"""
-        self.hold_released_reason = ""
+        self.ports.hold_released_reason = ""
         acquired = False
-        if self._should_hold_port():
-            acquired = self._acquire_port_if_needed()
+        if self.ports.should_hold():
+            acquired = self.ports.acquire_if_needed()
         return {"ok": True, "paused": False, "acquired": acquired,
-                "watch_running": self.loop.running, "port_owner": self.port_owner()}
+                "watch_running": self.loop.running, "port_owner": self.ports.owner()}
 
     def request_shutdown(self):
         self.shutdown_event.set()
@@ -1174,7 +722,7 @@ class WebServer(object):
         #   watch + human   → 不抢，把口留给用户
         #   light           → 本来就不常占口
         boot_error = None
-        if self.mode == "watch" and self._should_hold_port():
+        if self.mode == "watch" and self.ports.should_hold():
             try:
                 resolved = self.current_device()
                 self.loop.start(resolved["device"],
@@ -1184,9 +732,9 @@ class WebServer(object):
                 boot_error = exc.to_dict()
                 self.loop.last_error = exc.message
         elif self.mode == "watch":
-            self.hold_released_reason = "控制权不在 AI，监视模式暂不占口"
+            self.ports.hold_released_reason = "控制权不在 AI，监视模式暂不占口"
         # 记住启动时的控制权，避免看门狗第一次跑就误判成"状态变化"
-        self._last_control = self.state.read().get("state")
+        self.ports._last_control = self.state.read().get("state")
 
         handler = type("BoundHandler", (BridgeHandler,), {})
         self.httpd = ThreadingHTTPServer(("127.0.0.1", self.port), handler)
@@ -1211,7 +759,7 @@ class WebServer(object):
         url = "http://127.0.0.1:%d" % self.port
         threading.Thread(target=self._heartbeat_loop, name="heartbeat", daemon=True).start()
         # 看门狗：控制权被别处（CLI / serial_control 工具）改掉时，这里自动释放/重占串口
-        threading.Thread(target=self._port_watchdog, name="port-watchdog", daemon=True).start()
+        threading.Thread(target=self.ports.watchdog, name="port-watchdog", daemon=True).start()
         # 定时发送：独立线程，light / watch 两种模式都生效（Bug 4）
         self._autosend_thread = threading.Thread(
             target=self._autosend_loop, name="autosend", daemon=True)

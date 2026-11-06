@@ -61,9 +61,15 @@ def install_fakes():
     sio.transact = fake_transact
     sio.drain = fake_drain
     sio.open_and_check = fake_open_check
-    # supervisor 用 from .ports import resolve_port，所以打在它自己的命名空间上
+    # supervisor 用 from .ports import resolve_port，所以打在它自己的命名空间上；
+    # 拆出 watch_loop.py 之后，那边也各自 import 了一份，同样要打
     sup.resolve_port = fake_resolve
     sup.scan_ports = lambda: []
+    try:
+        from serial_bridge import watch_loop
+        watch_loop.resolve_port = fake_resolve
+    except ImportError:
+        pass
     return calls
 
 

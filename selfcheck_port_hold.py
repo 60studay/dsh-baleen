@@ -16,6 +16,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 from serial_bridge.state import SharedState, STATE_AI, STATE_HUMAN, STATE_PAUSED
+from serial_bridge.port_manager import PortManager
 
 PASS = []
 FAIL = []
@@ -56,38 +57,31 @@ class FakeLoop(object):
 
 
 class FakeServer(object):
-    """只装配 reconcile_port 需要的那几个字段，绕开 HTTP 和真串口。"""
+    """只装配 PortManager 需要的那几个依赖，绕开 HTTP 和真串口。"""
 
     def __init__(self, runtime_dir, scene="t", mode="watch"):
         self.state = SharedState(runtime_dir, scene)
         self.mode = mode
         self.loop = FakeLoop()
-        self.hold_released_reason = ""
-        self._last_control = None
-        self.last_reconcile = None
+        # 被测对象：真正在用的 PortManager（不再是测试里手抄的一份逻辑）
+        self.ports = PortManager(
+            state=self.state,
+            loop=self.loop,
+            current_device=lambda: {"device": "FAKE", "source": "fake"},
+            effective_cfg=lambda: {"baud": 115200},
+            mode_getter=lambda: self.mode,
+        )
 
-    # 从 supervisor.WebServer 抄来的两个关键判断（保持同步）
-    def _should_hold_port(self, control=None):
-        state = (control or self.state.read().get("state") or "human")
-        return self.mode == "watch" and state == STATE_AI
-
-    def _release_port_if_idle(self, reason=""):
-        if self.loop.running and not self._should_hold_port():
-            self.loop.stop()
-            self.hold_released_reason = reason or "控制权不在 AI"
-            return True
-        return False
-
+    # 兼容测试正文里的老名字，转调 PortManager
     def _acquire_port_if_needed(self):
-        if self.mode != "watch" or self.loop.running:
-            return False
-        self.loop.start("FAKE", 115200)
-        self.hold_released_reason = ""
-        return True
+        return self.ports.acquire_if_needed()
 
     def reconcile_port(self, trigger="change"):
-        from serial_bridge.supervisor import WebServer
-        return WebServer.reconcile_port(self, trigger)
+        return self.ports.reconcile(trigger)
+
+    @property
+    def hold_released_reason(self):
+        return self.ports.hold_released_reason
 
 
 def main():

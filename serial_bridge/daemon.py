@@ -30,7 +30,7 @@ from .config import load_scene
 from .errors import BridgeError
 from .log import Logger
 from .ports import resolve_port
-from .runner import RuleWorker
+from .rule_checker import RuleChecker
 from .state import SharedState, STATE_PAUSED, _safe_name
 from .transport import create_transport, describe_transport
 
@@ -68,9 +68,11 @@ class Daemon(object):
         self.last_activity = time.time()
         self.started_at = time.time()
         self.last_error = ""
-        self._rule_worker = None
-        self._check_failures = 0
-        self._checks_stopped = False
+        # 判定与网页共用同一份实现（rule_checker.py）
+        self.checker = RuleChecker(self.scene, self.state, self.logger,
+                                   send_action=self._send_action)
+        # 连续无回显计数：no_response 规则靠它判断"失联"
+        self.no_response_streak = 0
         self.stats = {"sent": 0, "rx_bytes": 0, "checks": 0, "errors": 0}
         # light = 有人发命令就回应（默认）；watch = 持续监视（网页"监视模式"）
         # 两者读线程都在跑，区别是：watch 会把每段数据都送判定，并且保留更长的历史。
@@ -92,12 +94,12 @@ class Daemon(object):
 
     def stop(self):
         self.running = False
-        if self._rule_worker is not None:
+        if self.checker._worker is not None:
             try:
-                self._rule_worker.close()
+                self.checker._worker.close()
             except Exception:
                 pass
-            self._rule_worker = None
+            self.checker._worker = None
         if self.transport is not None:
             try:
                 self.transport.close()
@@ -144,6 +146,7 @@ class Daemon(object):
                     if len(self.buffer) > cap:      # 防止长时间没人取把内存吃满
                         del self.buffer[:-(cap // 2)]
                 self.stats["rx_bytes"] += len(chunk)
+                self.no_response_streak = 0
                 self.logger.append("RX", chunk.decode("utf-8", errors="replace"))
                 self.touch()
                 # 监视模式：不等"某条命令的窗口"，来什么判什么
@@ -239,6 +242,10 @@ class Daemon(object):
         with self.lock:
             data = bytes(self.buffer[base:])
         if data:
+            self.no_response_streak = 0
+        else:
+            self.no_response_streak += 1
+        if data:
             self.logger.append("RX", data.decode("utf-8", errors="replace"))
         return {
             "scene": self.scene.name,
@@ -257,51 +264,17 @@ class Daemon(object):
         }
 
     # ── 判定 ────────────────────────────────────────────────────────────────
+    def _send_action(self, command):
+        """规则自动处置：直接写串口（管家已经持有连接）。"""
+        self.transport.write(str(command).encode("utf-8")
+                             + _decode_newline(self.scene.cfg.get("newline")))
+        self.logger.append("TX", command)
+        self.stats["sent"] += 1
+
     def _maybe_check(self, text, source):
-        if self._checks_stopped:
-            return
-        watch = self.state.read().get("watch") or {}
-        if not watch.get("check_enabled"):
-            return
-        want = str(watch.get("check_source") or "watch_only")
-        if want == "watch_only" and source != "watch":
-            return
-        if want == "manual_only" and source != "manual":
-            return
-        cfg = dict(self.scene.watch_cfg())
-        cfg.update({k: watch[k] for k in watch if k in
-                    ("rules", "allowed_auto_commands", "rule_cooldown_s",
-                     "rule_timeout_ms", "max_consecutive_failures")})
-        if self._rule_worker is None:
-            self._rule_worker = RuleWorker(package_root=os.path.dirname(
-                os.path.dirname(os.path.abspath(__file__))))
-        results, error = self._rule_worker.evaluate(
-            text, cfg, timeout_ms=int(cfg.get("rule_worker_timeout_ms", 2000)))
+        """委托给共用的 RuleChecker（开关/熔断/告警都在那边）。"""
+        self.checker.run(text, source, self.no_response_streak)
         self.stats["checks"] += 1
-        if error:
-            self._check_failures += 1
-            if self._check_failures >= int(cfg.get("max_consecutive_failures", 3)):
-                self._checks_stopped = True
-            return
-        self._check_failures = 0
-        for item in results or []:
-            if not item.get("matched"):
-                continue
-            action = item.get("action")
-            sent = False
-            if action:
-                try:
-                    self.transport.write(str(action).encode("utf-8") + _decode_newline(
-                        self.scene.cfg.get("newline")))
-                    self.logger.append("TX", action)
-                    sent = True
-                except Exception:
-                    sent = False
-            self.state.append_alert({
-                "rule": item.get("rule"), "reason": item.get("reason"),
-                "response": text[:200], "action": action or "",
-                "sent": sent, "source": source, "scene": self.scene.name,
-            })
 
     # ── 空闲退出 ────────────────────────────────────────────────────────────
     def _idle_loop(self):
