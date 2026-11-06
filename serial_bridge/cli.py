@@ -435,6 +435,34 @@ def cmd_control(paths, args):
     return _ok({"scene": scene.name, "state": current})
 
 
+def _default_scene(paths):
+    """没指定场景时：只有一个场景就用它，多个就报错让调用方明确。"""
+    scenes = [s["name"] for s in list_scenes(paths["protocol_root"])]
+    if len(scenes) == 1:
+        return scenes[0]
+    if not scenes:
+        raise BridgeError("scene_missing", "一个场景都没有。",
+                          hint=["在 protocols/ 下建一个场景目录"])
+    raise BridgeError("config", "有多个场景，必须指定 scene。",
+                      hint=["可用场景：%s" % "、".join(scenes)])
+
+
+def cmd_webctl(paths, args):
+    """网页服务遥控：open / status / close（给 AI 的 serial_web 工具用）。"""
+    from . import web_service
+    scene = (args.scene or "").strip() or _default_scene(paths)
+    action = args.action
+    if action == "open":
+        return _ok(web_service.open_web(
+            paths, scene,
+            port=int(args.port or 0),
+            mode=args.mode,
+            open_browser=bool(getattr(args, "open_browser", False))))
+    if action == "close":
+        return _ok(web_service.close_web(paths, scene))
+    return _ok(web_service.status_web(paths, scene))
+
+
 def cmd_daemon(paths, args):
     """管家：常驻持有连接的独立进程（start / stop / status）。
 
@@ -582,6 +610,15 @@ def build_parser():
     daemon.add_argument("--port", type=int, default=0)
     daemon.add_argument("--idle", type=int, default=0, help="空闲多少秒自动退出")
 
+    # 网页遥控：ai 工具 serial_web 用的。web 是前台阻塞，webctl 是"起完就返回"
+    webctl = sub.add_parser("webctl")
+    webctl.add_argument("--action", default="status",
+                        choices=["open", "status", "close"])
+    webctl.add_argument("--scene", default="", help="留空 = 唯一的场景")
+    webctl.add_argument("--port", type=int, default=0, help="0 = 自动挑（8898 起）")
+    webctl.add_argument("--mode", default="light", choices=["light", "watch"])
+    webctl.add_argument("--open-browser", action="store_true")
+
     return parser
 
 
@@ -602,6 +639,7 @@ def main(argv=None):
         "watch": cmd_watch,
         "web": cmd_web,
         "daemon": cmd_daemon,
+        "webctl": cmd_webctl,
     }[args.action_name]
     try:
         return handler(paths, args)
