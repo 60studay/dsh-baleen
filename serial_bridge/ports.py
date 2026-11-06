@@ -13,6 +13,10 @@
 
 from .errors import BridgeError, port_label
 
+# 网页波特率下拉框的候选值。放在这里（而不是 supervisor）是因为
+# web_handler（路由层）也要用，而路由层不该反过来依赖业务层。
+BAUD_CHOICES = [9600, 19200, 38400, 57600, 74880, 115200, 230400, 250000, 460800, 921600]
+
 
 def _load_serial():
     try:

@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
 from .errors import BridgeError
+from .ports import BAUD_CHOICES, scan_ports
 
 
 class BridgeHandler(BaseHTTPRequestHandler):

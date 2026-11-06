@@ -30,8 +30,9 @@ from .rules import RULE_TYPES
 from .runner import RuleWorker
 from .state import SharedState, STATE_AI, STATE_HUMAN, STATE_PAUSED, VALID_STATES, _safe_name
 from .transport import describe_transport as transport_describe
+# BAUD_CHOICES 定义在 ports.py（路由层 web_handler 也要用，不该反过来依赖这里）
+from .ports import BAUD_CHOICES  # noqa: F401  （对外仍可 from supervisor import BAUD_CHOICES）
 
-BAUD_CHOICES = [9600, 19200, 38400, 57600, 74880, 115200, 230400, 250000, 460800, 921600]
 DEFAULT_PORT = 8899
 
 
