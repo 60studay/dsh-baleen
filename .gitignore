@@ -44,3 +44,6 @@ _verify.py
 _v2.py
 _chk*.py
 logs/
+# 一次性小脚本：下划线开头的 .py（_w.py / _c.py / _push.py / _gi.py …）
+# 这些只是跑一段临时逻辑用的，绝不能进仓库（已误提交过 3 次）
+_[a-zA-Z0-9]*.py
