@@ -161,10 +161,23 @@ def main():
 
     try:
         run_checks(base, original)
+    except Exception as exc:
+        # 关键：这里必须**兜住一切异常**。
+        # 一个"测接口不崩"的脚本，如果自己被异常打死，就失去了意义——
+        # 最需要它报警的时候，它先倒了，只剩一个 traceback 和退出码，
+        # 看不出有几项过了、几项没过。
+        # 所以任何意外都转成一条 FAIL，然后照常出统计。
+        check("自检过程不应抛异常", False, "%s: %s" % (type(exc).__name__, exc))
     finally:
-        restore(base, original_control, original_watch)
+        try:
+            restore(base, original_control, original_watch)
+        except Exception as exc:
+            check("还原测试前状态", False, "%s: %s" % (type(exc).__name__, exc))
         # 最后关掉临时实例
-        http_post(base, "/shutdown", {}, timeout=3)
+        try:
+            http_post(base, "/shutdown", {}, timeout=3)
+        except Exception:
+            pass
 
     return summary()
 
@@ -424,4 +437,17 @@ def summary():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # 总兜底：连"起临时实例之前"就出意外（比如 import 挂了、路径不对），
+    # 也要给出可读的结论，而不是只剩一个 traceback。
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except Exception as exc:
+        print("\n" + "=" * 70)
+        print("自检没能跑起来：%s: %s" % (type(exc).__name__, exc))
+        print("这本身就是失败 —— 说明环境或代码有更底层的问题。")
+        print("=" * 70)
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
