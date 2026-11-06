@@ -1,5 +1,5 @@
 /**
- * dsh-baleen（鲸须）v2 —— 通用串口工具插件。
+ * dsh-whalesong（鲸歌）v2 —— 通用串口工具插件。
  *
  * 设计要点：
  * - 不常驻、不占口：每次调用临时打开串口，发完就读回显并关闭。
@@ -22,7 +22,7 @@ const ENTRY = path.join(HERE, 'bridge.py');
 const VENDOR = path.join(HERE, 'vendor', 'pyserial-3.5');
 const BUNDLED_PROTOCOLS = path.join(HERE, 'protocols');
 
-export const name = 'baleen';
+export const name = 'whalesong';
 export const inject = ['tools'];
 
 const DEFAULT_PYTHON = process.env.DSH_PYTHON || 'python';
@@ -68,7 +68,7 @@ function makeEnv({ logRoot, protocolRoot }) {
 function renderError(kind, error, fallback) {
   const lines = [];
   const advice = KIND_ADVICE[kind];
-  lines.push(error?.message || fallback || '鲸须调用失败');
+  lines.push(error?.message || fallback || '鲸歌调用失败');
   if (Array.isArray(error?.hint) && error.hint.length > 0) {
     lines.push('请检查：');
     for (const [index, item] of error.hint.entries()) lines.push(`  ${index + 1}. ${item}`);
@@ -184,10 +184,10 @@ export function apply(ctx, config = {}) {
       timedOut = Boolean(error?.killed);
       if (!stdout.trim()) {
         if (timedOut) {
-          throw new Error(`鲸须调用超时（${CALL_TIMEOUT_MS} ms）：串口可能被占用，或设备没有回应`);
+          throw new Error(`鲸歌调用超时（${CALL_TIMEOUT_MS} ms）：串口可能被占用，或设备没有回应`);
         }
         const detail = stderr.trim() || String(error?.message ?? error);
-        throw new Error(`鲸须启动失败：${detail.split(/\r?\n/).slice(-4).join('\n')}`);
+        throw new Error(`鲸歌启动失败：${detail.split(/\r?\n/).slice(-4).join('\n')}`);
       }
     }
 
@@ -196,11 +196,11 @@ export function apply(ctx, config = {}) {
     try {
       parsed = JSON.parse(line);
     } catch {
-      throw new Error(`鲸须返回了非 JSON 输出：${line.slice(0, 400)}`);
+      throw new Error(`鲸歌返回了非 JSON 输出：${line.slice(0, 400)}`);
     }
     if (!parsed?.ok) {
       const error = parsed?.error ?? {};
-      const failure = new Error(renderError(error.kind, error, '鲸须返回失败'));
+      const failure = new Error(renderError(error.kind, error, '鲸歌返回失败'));
       failure.kind = error.kind;
       throw failure;
     }

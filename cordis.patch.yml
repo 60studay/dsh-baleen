@@ -1,12 +1,12 @@
-# 把鲸须（dsh-baleen）插入当前 DSH profile。
+# 把鲸歌（dsh-whalesong）插入当前 DSH profile。
 # config 可整块覆盖：装好之后一般不用改，除非换了机器/搬了数据目录。
 #
 # ⚠️ id / name 必须与 package.json 的 "name" 完全一致。
 # 改名时这三处（package.json、本文件、重装）要一起改，只改一半会导致
 # 加载器找不到包、插件在下次重启时静默消失。
 - insert:
-    - id: baleen
-      name: 'dsh-baleen'
+    - id: whalesong
+      name: 'dsh-whalesong'
       config:
         # 留空则自动探测（优先用 DSH 自带的 Python，其次系统 PATH 里的 python）
         pythonPath: ''

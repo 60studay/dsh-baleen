@@ -1,4 +1,4 @@
-# 鲸须 · dsh-baleen（测试版）
+# 鲸歌 · dsh-whalesong（测试版）
 
 > ## ⚠️ 测试版说明
 >
@@ -311,7 +311,7 @@ human 状态下这个轮询直接返回 `skipped`，**一次都不碰串口**。
 ## 目录结构
 
 ```
-dsh-baleen\
+dsh-whalesong\
 ├── index.js                    工具注册（零设备知识）
 ├── bridge.py                   启动器
 ├── serial_bridge\

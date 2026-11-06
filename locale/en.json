@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "Baleen",
+    "title": "Whalesong",
     "description": "Gives every session serial-port tools: auto-match the port by name or VID:PID, send a command and read the echo in text or hex, replay the TX/RX log, read protocol notes, and run independent polling / anomaly-checking switches with a whitelist."
   }
 }

@@ -435,7 +435,7 @@ def cmd_web(paths, args):
 
 # ── 入口 ────────────────────────────────────────────────────────────────────
 def build_parser():
-    parser = argparse.ArgumentParser(description="DSH Baleen（鲸须）v2")
+    parser = argparse.ArgumentParser(description="DSH Whalesong（鲸歌）v2")
     sub = parser.add_subparsers(dest="action_name")
 
     sub.add_parser("scan")
@@ -503,7 +503,7 @@ def main(argv=None):
     except Exception as exc:  # 兜底：绝不把堆栈漏给插件层
         return _fail(BridgeError(
             "internal",
-            "鲸须内部错误。",
+            "鲸歌内部错误。",
             hint=["把这条消息连同下面的 detail 一起反馈"],
             detail="%s: %s" % (type(exc).__name__, exc),
         ))
