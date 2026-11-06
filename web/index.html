@@ -118,6 +118,17 @@
   .switch input:checked + .knob { background: var(--accent); }
   .switch input:checked + .knob::after { transform: translateX(16px); background: #fff; }
   .hint { color: var(--muted); font-size: 11px; line-height: 1.4; }
+  /* 自动选择的三种结果：检测中 / 成功 / 失败，颜色要能一眼分开 */
+  .hint.ok { color: var(--human); }
+  .hint.bad { color: var(--danger); }
+  @keyframes sbPulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+  button.working { animation: sbPulse 1s ease-in-out infinite; opacity: 1 !important; }
+  /* 下拉框真的变了要让用户看见：闪一下绿边 */
+  @keyframes sbFlash {
+    0% { outline: 2px solid var(--human); outline-offset: 1px; }
+    100% { outline: 2px solid transparent; outline-offset: 1px; }
+  }
+  select.flash { animation: sbFlash .9s ease-out; }
   .rule-state { font-size: 12px; }
   .rule-state.ok { color: var(--human); }
   .rule-state.bad { color: var(--danger); }
@@ -726,14 +737,75 @@
   $('watchCommand').addEventListener('change', pushWatch);
   $('watchInterval').addEventListener('change', pushWatch);
 
+  /* ── AI 自动选择 ─────────────────────────────────────────
+   *  用户反馈"按下去特别没有实感"：原来按钮不变、下拉框不动，
+   *  只有一行灰字，看不出到底选没选上。现在给三重反馈：
+   *  1) 按钮自己变成"检测中…"并脉动（表示真的在干活）
+   *  2) 结果文字变绿/变红（一眼分清成没成）
+   *  3) 下拉框真的跳到选中的那一项并闪一下绿边（最关键的确认）
+   */
   $('btnAuto').addEventListener('click', function () {
+    var btn = $('btnAuto');
+    var reason = $('autoReason');
+    var original = btn.textContent;
+    if (btn.disabled) return;
+
+    btn.disabled = true;
+    btn.classList.add('working');
+    btn.textContent = '检测中…';
+    reason.className = 'hint';
+    reason.textContent = '正在按场景规则扫描串口…';
+
+    function restore() {
+      btn.disabled = false;
+      btn.classList.remove('working');
+      btn.textContent = original;
+    }
+    function fail(error) {
+      restore();
+      reason.className = 'hint bad';
+      reason.textContent = '✗ ' + errLine(error);
+      pushEvent('bad', '自动选择失败：' + errLine(error));
+    }
+
     post('/autodetect', {}).then(function (data) {
-      if (!data.ok) { $('autoReason').textContent = errText(data.error); return; }
-      $('autoReason').textContent = '选中 ' + data.port + '（' + data.reason + '）' +
+      if (!data.ok) { fail(data.error); return; }
+      var port = data.port;
+
+      // 3) 让下拉框真的跳到这一项（先跳，用户马上看见变化）
+      var sel = $('portSelect');
+      var existed = false;
+      for (var i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].value === port) { sel.selectedIndex = i; existed = true; break; }
+      }
+      if (!existed && port) {   // 端口是新的：临时插进去，refreshPorts 会补全
+        var o = document.createElement('option');
+        o.value = port; o.textContent = port;
+        sel.appendChild(o);
+        sel.value = port;
+      }
+      sel.classList.remove('flash');
+      void sel.offsetWidth;      // 强制重排，动画才能重放
+      sel.classList.add('flash');
+
+      reason.className = 'hint ok';
+      reason.textContent = '✓ 选中 ' + port + '（' + data.reason + '）' +
         (data.note ? '；' + data.note : '');
-      post('/reconnect', { com: data.port, baud: parseInt($('baudSelect').value, 10) || 0 })
-        .then(function () { refreshPorts(); tick(); });
-    });
+      pushEvent('', '自动选择：' + port + '（' + data.reason + '）');
+
+      post('/reconnect', { com: port, baud: parseInt($('baudSelect').value, 10) || 0 })
+        .then(function (r) {
+          restore();
+          if (!r.ok) {
+            reason.className = 'hint bad';
+            reason.textContent = '✗ 已选中 ' + port + '，但连接失败：' + errLine(r.error);
+            pushEvent('bad', '自动选择后连接失败：' + errLine(r.error));
+            return;
+          }
+          refreshPorts(); tick();
+        })
+        .catch(function () { restore(); });
+    }).catch(function (e) { fail({ message: '请求失败：' + (e && e.message || e) }); });
   });
 
   ['portSelect', 'baudSelect'].forEach(function (id) {

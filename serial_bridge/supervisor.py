@@ -521,8 +521,13 @@ class WebServer(object):
             resolved = self.current_device()
             self.loop.start(resolved["device"], int(self.effective_cfg().get("baud") or 115200))
         else:
+            # 轻模式**不占口**，所以这里绝不能真去 open 一下做"验证"。
+            # 两个理由（都是实测踩出来的）：
+            #   1) 打开会撞上真正持口的那个进程（管家/定时发送线程/用户的串口助手），
+            #      于是报"COM10 被其他程序占用"——但轻模式本来就不该占口，这是假警报；
+            #   2) CH340 在打开瞬间会拉高 DTR/RTS，等于给板子来了一次复位。
+            # 轻模式只需要确认"这个口现在存在"，扫描就够。
             resolved = self.current_device()
-            serial_io.open_and_check(self.effective_cfg())
             self.state.update(port=resolved["device"],
                               baud=int(self.effective_cfg().get("baud") or 0))
         return {"ok": True, "port": self.current_device()["device"], "baud": self.effective_cfg().get("baud")}
