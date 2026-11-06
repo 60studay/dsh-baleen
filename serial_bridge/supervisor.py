@@ -1001,6 +1001,26 @@ class WebServer(object):
             raise BridgeError("config", "模式只能是 light 或 watch")
         if mode == self.mode:
             return {"ok": True, "mode": self.mode}
+
+        # 管家在跑：监视模式交给它，网页仍然不拿口（否则两边抢口）
+        daemon_url = self._daemon_url()
+        if daemon_url:
+            from . import daemon as daemon_mod
+            result = daemon_mod.request(daemon_url, "/mode", {"mode": mode}, timeout=2.0)
+            if result is None:
+                self._daemon_cache = (0, None)      # 管家没了：退回本地逻辑
+            elif not result.get("ok"):
+                err = result.get("error") or {}
+                raise BridgeError(err.get("kind") or "internal",
+                                  err.get("message") or "管家拒绝切换模式",
+                                  hint=err.get("hint"))
+            else:
+                self.mode = mode
+                self.loop.stop()                    # 网页不再持口
+                self.hold_released_reason = "由管家持有（监视模式）"
+                return {"ok": True, "mode": self.mode, "watch_running": True,
+                        "via": "daemon"}
+
         if mode == "watch":
             # 切监视模式也遵守控制权：控制权不在 AI 就先不抢口
             self.mode = "watch"

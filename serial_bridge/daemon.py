@@ -72,6 +72,10 @@ class Daemon(object):
         self._check_failures = 0
         self._checks_stopped = False
         self.stats = {"sent": 0, "rx_bytes": 0, "checks": 0, "errors": 0}
+        # light = 有人发命令就回应（默认）；watch = 持续监视（网页"监视模式"）
+        # 两者读线程都在跑，区别是：watch 会把每段数据都送判定，并且保留更长的历史。
+        self.mode = "light"
+        self.mode_changed_at = time.time()
 
     # ── 生命周期 ────────────────────────────────────────────────────────────
     def start(self):
@@ -104,6 +108,21 @@ class Daemon(object):
     def touch(self):
         self.last_activity = time.time()
 
+    def set_mode(self, mode):
+        """切换轻模式 / 监视模式。
+
+        监视模式不是"另一套读法"——读线程一直在跑，区别在于监视模式下
+        **每段到达的数据都送判定**（不再只盯着"刚发出去那条命令的窗口"），
+        并且保留更长的历史供 /poll 取。
+        """
+        mode = str(mode or "").strip().lower()
+        if mode not in ("light", "watch"):
+            raise BridgeError("config", "mode 只能是 light 或 watch，收到 %r" % mode)
+        self.mode = mode
+        self.mode_changed_at = time.time()
+        self.touch()
+        return {"ok": True, "mode": self.mode, "changed_at": self.mode_changed_at}
+
     # ── 读线程 ──────────────────────────────────────────────────────────────
     def _read_loop(self):
         while self.running:
@@ -121,11 +140,15 @@ class Daemon(object):
                     # 判定窗口内到达的字节归同一条命令（异步故障就靠这个收）
                     if now <= self.judge_deadline:
                         self.judge_buf.extend(chunk)
-                    if len(self.buffer) > 256 * 1024:      # 防止长时间没人取把内存吃满
-                        del self.buffer[:-128 * 1024]
+                    cap = 256 * 1024 if self.mode == "watch" else 64 * 1024
+                    if len(self.buffer) > cap:      # 防止长时间没人取把内存吃满
+                        del self.buffer[:-(cap // 2)]
                 self.stats["rx_bytes"] += len(chunk)
                 self.logger.append("RX", chunk.decode("utf-8", errors="replace"))
                 self.touch()
+                # 监视模式：不等"某条命令的窗口"，来什么判什么
+                if self.mode == "watch" and now > self.judge_deadline:
+                    self._maybe_check(chunk.decode("utf-8", errors="replace"), "watch")
             elif self.judge_buf and now > self.judge_deadline:
                 self._flush_judge()
             else:
@@ -312,6 +335,7 @@ class Daemon(object):
             "transport": describe_transport(self.scene.cfg,
                                             (self.resolved or {}).get("device")),
             "control": current.get("state") or "human",
+            "mode": self.mode,
             "uptime_s": int(time.time() - self.started_at),
             "idle_s": int(time.time() - self.last_activity),
             "idle_timeout_s": self.idle_s,
@@ -394,6 +418,8 @@ class _Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=self.daemon.shutdown,
                                  kwargs={"reason": "HTTP shutdown"}, daemon=True).start()
                 return None
+            if path == "/mode":
+                return self._json(self.daemon.set_mode(str(body.get("mode") or "")))
             return self._json({"ok": False, "error": {"kind": "not_found",
                                                      "message": "未知路径 %s" % path}}, 404)
         except BridgeError as exc:
