@@ -2,33 +2,22 @@
 """串口收发核心。
 
 保持 v1 的两个好设计：
-- **不常驻、不占口**：每次调用临时开串口 → 收发 → 关闭
+- **不常驻、不占口**：每次调用临时开连接 → 收发 → 关闭
 - **回包节奏**：先等首字节（设备可能要想一会儿才回）→ 再等线路安静
 
 v2 新增：
 - 三类故障分开报（未连接 / 被占用 / 无响应），见 errors.py
 - 收发统一返回原始 bytes，hex 由上层渲染（3.4 要求"不要后端先解码再转，会丢数据"）
+
+v3 起底层改成 Transport：这里只保留"业务级收发"（发一条、按节奏收一段），
+具体是串口还是 TCP 由 transport.py 决定，本文件不 import pyserial。
 """
 
 import time
 
 from .errors import BridgeError
 from .ports import resolve_port
-
-
-def _load_serial():
-    try:
-        import serial
-        return serial
-    except ImportError:
-        raise BridgeError(
-            "config",
-            "pyserial 没有加载成功。",
-            hint=[
-                "插件自带的 pyserial 在 vendor/pyserial-3.5",
-                "若手工运行，请设置 PYTHONPATH 指向该目录",
-            ],
-        )
+from .transport import create_transport
 
 
 def decode_newline(value, default="\\r\\n"):
@@ -41,60 +30,17 @@ def decode_newline(value, default="\\r\\n"):
 
 
 def open_port(cfg, device, baud=None):
-    """打开串口；失败时按"被占用/其他"分类，绝不把堆栈抛出去。"""
-    serial = _load_serial()
-    try:
-        port = serial.Serial(
-            port=device,
-            baudrate=int(baud or cfg.get("baud") or 115200),
-            bytesize=int(cfg.get("bytesize", 8)),
-            parity=cfg.get("parity", "N"),
-            stopbits=float(cfg.get("stopbits", 1)),
-            timeout=0.02,
-        )
-    except Exception as exc:  # pyserial 的异常类型在 Windows 上五花八门
-        message = str(exc)
-        lowered = message.lower()
-        busy_markers = ("access is denied", "permissionerror", "拒绝访问", "being used",
-                        "cannot open", "could not open")
-        if any(marker in lowered for marker in busy_markers):
-            raise BridgeError(
-                "port_busy",
-                "%s 被其他程序占用。" % device,
-                hint=[
-                    "串口助手 / 其他串口工具是否开着",
-                    "网页监视模式（watch 模式）是否正在运行",
-                    "上一次的 bridge.py 是否还没退出",
-                ],
-                detail=message,
-            )
-        if "filenotfound" in lowered or "系统找不到" in message or "找不到" in message:
-            raise BridgeError(
-                "no_device",
-                "%s 打不开：系统里没有这个串口。" % device,
-                hint=["USB 是否被拔掉", "拔插后串口号可能已变化，重新扫描一次"],
-                detail=message,
-            )
-        raise BridgeError(
-            "internal",
-            "打开 %s 失败。" % device,
-            hint=["换一个 USB 口试试", "确认驱动装好"],
-            detail=message,
-        )
+    """打开连接并返回 Transport 对象。
 
-    # 很多开发板（ESP32 / Arduino / STM32 最小系统）把 DTR/RTS 接到复位或 BOOT 脚，
-    # 打开串口时这两根线默认拉高会误触发复位。这是通用问题，不是某块板专用。
-    # 必须在 open() 之后赋值：构造参数里传 dtr=False 无效（实测打开后仍是 True）。
-    try:
-        port.dtr = False
-        port.rts = False
-    except Exception:
-        pass
-    return port
+    返回的对象仍然是"鸭子类型"的串口（write/read/close 都一样），
+    所以老调用方（supervisor 的常驻句柄）不用改一行。
+    具体用哪种传输方式由 cfg["transport"] 决定，默认串口。
+    """
+    return create_transport(cfg, device, baud).open()
 
 
 def _open_with_retry(cfg, device, baud=None, attempts=3, gap_s=0.25):
-    """打开串口，遇到"被占用"时短暂重试。
+    """打开连接，遇到"被占用"时短暂重试。
 
     为什么需要：同一个口可能被另一个客户端瞬间占用——最常见的是网页的
     定时发送线程刚好在开关口，或者用户的串口助手刚点开一下。
@@ -198,7 +144,6 @@ def drain(cfg, device, duration_ms=400, baud=None):
     网页"轻模式"的 /poll 用它——不长期占口，但也能捡到设备主动上报的数据
     （代价是两次 poll 之间的数据仍可能漏，这点在文档里已如实说明）。
     """
-    serial = _load_serial()
     first_byte_ms = int(cfg.get("wait_first_byte_ms", 1500))
     quiet_ms = int(cfg.get("quiet_ms", 200))
     budget_ms = max(int(duration_ms), first_byte_ms)

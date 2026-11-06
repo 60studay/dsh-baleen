@@ -30,6 +30,7 @@ from .errors import BridgeError
 from .ports import resolve_port, scan_ports
 from .rules import RuleEngine
 from .state import SharedState, _safe_name
+from .transport import describe_transport
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -204,6 +205,8 @@ def cmd_info(paths, args):
         "match": str(cfg.get("match") or ""),
         "match_vid_pid": str(cfg.get("match_vid_pid") or ""),
         "baud": int(cfg.get("baud") or 0),
+        "transport": describe_transport(cfg,
+                                        (resolved or {}).get("device")),
         "newline": cfg.get("newline") if cfg.get("newline") is not None else "\\r\\n",
         "protocol": scene.protocol_text(),
         "protocol_path": scene.protocol_path,
@@ -323,11 +326,17 @@ def cmd_status(paths, args):
     # ai_may_send 必须是**真实门禁结果**，不能只看 state 字符串：
     # 没人开网页时门禁是宽松的，此时 state 仍是 human 但 AI 其实可以发。
     allowed, _ = state.check_ai_allowed()
+    try:
+        resolved = resolve_port(scene.cfg)
+        transport_info = describe_transport(scene.cfg, resolved["device"])
+    except BridgeError:
+        transport_info = describe_transport(scene.cfg)
     return _ok({
         "scene": scene.name,
         "state": current,
         "ai_may_send": bool(allowed),
         "watched": state.presence_alive(),
+        "transport": transport_info,
         "alerts": state.read_alerts(args.alerts),
         "alerts_path": state.alerts_path,
     })

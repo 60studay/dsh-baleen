@@ -26,6 +26,7 @@ from .ports import resolve_port, scan_ports
 from .rules import RULE_TYPES
 from .runner import RuleWorker
 from .state import SharedState, STATE_AI, STATE_HUMAN, STATE_PAUSED, VALID_STATES, _safe_name
+from .transport import describe_transport as transport_describe
 
 BAUD_CHOICES = [9600, 19200, 38400, 57600, 74880, 115200, 230400, 250000, 460800, 921600]
 DEFAULT_PORT = 8899
@@ -570,9 +571,13 @@ class WebServer(object):
             resolved = self.current_device()
             data["resolved"] = resolved
             data["port"] = resolved["device"]
+            # 传输方式描述：网页侧边栏据此显示"串口 COM10 @115200"
+            data["transport"] = transport_describe(
+                self.effective_cfg(), resolved["device"], resolved.get("baud"))
         except BridgeError as exc:
             data["resolved"] = None
             data["resolve_error"] = exc.to_dict()
+            data["transport"] = transport_describe(self.effective_cfg())
         data["port_owner"] = self.port_owner()
         return data
 

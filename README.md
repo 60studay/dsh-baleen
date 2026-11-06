@@ -318,7 +318,8 @@ dsh-whalesong\
 │   ├── cli.py                  命令行入口，stdout 永远是一行 JSON
 │   ├── errors.py               结构化错误（三类故障）
 │   ├── ports.py                扫描 + 自动匹配
-│   ├── io.py                   收发（返回原始 bytes）
+│   ├── transport.py            传输层：Transport 接口 + SerialTransport（加新方式只加类）
+│   ├── io.py                   业务级收发（不 import pyserial，只调 Transport）
 │   ├── rules.py                四种判据（纯判定，无设备语义）
 │   ├── runner.py               常驻判定子进程（超时可 kill）
 │   ├── state.py                跨进程控制权 + 告警
@@ -352,10 +353,12 @@ python selfcheck_port_hold.py      # 16 项：控制权↔串口句柄 的解耦
 python selfcheck_control_gate.py   # 34 项：AI 门禁 + /control 幂等与按钮矩阵
 python selfcheck_autosend.py       # 14 项：定时发送 + 轻模式不占口（假设备，无需硬件）
 python selfcheck_hex.py            # 11 项：十六进制按原始字节发送（假回环，无需硬件）
+python selfcheck_paths.py          # 5 项：Python 与 JS 的默认日志目录必须一致（防 state 分叉）
+python selfcheck_transport.py      # 16 项：传输层抽象（换一种传输方式照样能收发）
 python selfcheck_watch.py          # 15 项：双开关独立性 / check_source / 规则出错不影响收发（需要硬件）
 ```
 
-前五个不需要串口，拔掉设备也能跑；`selfcheck_watch.py` 找不到设备时会打印 SKIP 并以 0 退出。
+前七个不需要串口，拔掉设备也能跑；`selfcheck_watch.py` 找不到设备时会打印 SKIP 并以 0 退出。
 
 ## 已知限制
 

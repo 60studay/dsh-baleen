@@ -667,6 +667,7 @@ export function apply(ctx, config = {}) {
         note: current.note ?? '',
         aiMaySend: Boolean(data.ai_may_send),
         watched: Boolean(data.watched),
+        transport: data.transport ?? null,
         alerts: (data.alerts ?? []).map((alert) => ({
           time: alert.time ?? '',
           rule: alert.rule ?? '',

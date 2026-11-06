@@ -41,3 +41,4 @@ _sanitize.py
 _verify.py
 _v2.py
 _chk*.py
+logs/
