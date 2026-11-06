@@ -437,14 +437,15 @@ def cmd_control(paths, args):
 
 def _default_scene(paths):
     """没指定场景时：只有一个场景就用它，多个就报错让调用方明确。"""
-    scenes = [s["name"] for s in list_scenes(paths["protocol_root"])]
+    scenes = [s["name"] for s in list_scenes(paths["common_config"], paths["protocol_root"])]
     if len(scenes) == 1:
         return scenes[0]
     if not scenes:
         raise BridgeError("scene_missing", "一个场景都没有。",
                           hint=["在 protocols/ 下建一个场景目录"])
     raise BridgeError("config", "有多个场景，必须指定 scene。",
-                      hint=["可用场景：%s" % "、".join(scenes)])
+                      hint=["可用场景：%s" % "、".join(scenes),
+                            "也可以先调 serial_list 看每个场景现在会落到哪个口"])
 
 
 def cmd_webctl(paths, args):

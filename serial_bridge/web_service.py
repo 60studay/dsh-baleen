@@ -227,7 +227,9 @@ def close_web(paths, scene, wait_s=10.0):
         freed = _port_free(port) if port else True
         if gone and freed:
             return {"running": False, "stopped": True, "scene": scene,
-                    "released": True, "note": "网页已停止，端口已释放"}
+                    "released": True,
+                    "note": "网页已停止，端口已释放；Windows 上串口句柄可能还要 1~2 秒"
+                            "才彻底归还，立刻打开失败的话稍等一下再试"}
 
     # 兜底：进程还赖着就结束它，再确认一次
     if pid:
