@@ -155,9 +155,9 @@ def main():
 
     # ── 4. 自检项总数 ─────────────────────────────────────────────────────
     print("\n[自检项总数]")
-    m = re.search(r"(\d+)\s*项全绿", ledger)
+    m = re.search(r"(\d+)\s*项(?:全绿|通过)", ledger)
     if not m:
-        bad("总账写了自检项数", "没找到『N 项全绿』")
+        bad("总账写了自检项数", "没找到『N 项全绿 / N 项通过』")
     else:
         claimed_total = int(m.group(1))
         # 明细行形如 "rules 32 / port_hold 16 / ..."，直接加总更可靠
