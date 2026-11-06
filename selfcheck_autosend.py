@@ -40,8 +40,9 @@ def install_fakes():
 
     calls = {"transact": [], "drain": 0, "open_check": 0}
 
-    def fake_transact(cfg, device, payload, baud=None):
-        calls["transact"].append({"device": device, "payload": payload})
+    def fake_transact(cfg, device, payload, baud=None, raw_bytes=None):
+        calls["transact"].append({"device": device, "payload": payload,
+                                  "raw": raw_bytes})
         return {"tx": payload, "rx_bytes": b"OK", "rx_text": "OK\n",
                 "rx_hex": "4F 4B", "bytes": 2, "elapsed_ms": 1, "empty": False}
 
@@ -155,7 +156,7 @@ def main():
               "%d -> %d" % (a, srv.autosend_stats["sent"]))
 
         print("\n[6] 发送失败不炸线程")
-        def boom(cfg, device, payload, baud=None):
+        def boom(cfg, device, payload, baud=None, raw_bytes=None):
             raise RuntimeError("boom")
         from serial_bridge import io as sio
         original = sio.transact

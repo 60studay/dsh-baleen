@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""串口桥启动器（插件层的唯一入口）。
+"""鲸须（dsh-baleen）启动器（插件层的唯一入口）。
 
 为什么需要这一层：内核是一个包（serial_bridge/），用相对导入组织，
 所以不能直接 `python serial_bridge/cli.py`。这里把插件根目录放进 sys.path

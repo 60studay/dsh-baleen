@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""串口桥的 Python 内核。
+"""鲸须（dsh-baleen）的 Python 内核。
 
 分层（改代码前先看这里）：
     errors.py   结构化错误（三类故障分开报）

@@ -1,5 +1,5 @@
 {
-  "name": "dsh-serial-bridge",
+  "name": "dsh-baleen",
   "version": "2.0.0",
   "private": true,
   "type": "module",
@@ -32,7 +32,7 @@
     }
   },
   "meta": {
-    "title": "串口桥",
+    "title": "鲸须",
     "description": "让 AI 直接控制串口设备（AT 模块 / 底盘控制器 / Modbus / 任何 UART 设备）"
   },
   "engines": {

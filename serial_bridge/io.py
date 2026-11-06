@@ -114,11 +114,15 @@ def _open_with_retry(cfg, device, baud=None, attempts=3, gap_s=0.25):
     raise last
 
 
-def transact(cfg, device, payload, baud=None):
+def transact(cfg, device, payload, baud=None, raw_bytes=None):
     """发一条命令并读回显。
 
+    raw_bytes 不为 None 时**原样发送这些字节**（十六进制模式、二进制协议），
+    不再把 payload 当文本做 utf-8 编码。没有它就只能发文本，hex 模式会退化成
+    把 "AA 55" 这 5 个 ASCII 字符发出去（Bug 11）。
+
     返回 dict：
-      tx           原始发送文本
+      tx           原始发送文本（给人看的那个）
       rx_bytes     原始回显 bytes
       rx_text      UTF-8 解码（errors=replace），给"文字模式"
       rx_hex       空格分隔的十六进制，给"十六进制模式"
@@ -138,7 +142,13 @@ def transact(cfg, device, payload, baud=None):
     ser = _open_with_retry(cfg, device, baud)
     try:
         ser.reset_input_buffer()
-        ser.write(str(payload).encode("utf-8") + newline)
+        if raw_bytes is not None:
+            # 原始字节模式：帧由调用方给全，**不自动补换行**。
+            # 二进制协议（Modbus 等）的帧长度是定死的，多补 2 字节会直接破坏帧；
+            # 需要 CRLF 就在 hex 里写明 "0D 0A"。
+            ser.write(raw_bytes)
+        else:
+            ser.write(str(payload).encode("utf-8") + newline)
         out = b""
         t0 = time.time()
         last_byte = None

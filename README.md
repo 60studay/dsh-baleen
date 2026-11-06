@@ -311,7 +311,7 @@ human 状态下这个轮询直接返回 `skipped`，**一次都不碰串口**。
 ## 目录结构
 
 ```
-dsh-serial-bridge\
+dsh-baleen\
 ├── index.js                    工具注册（零设备知识）
 ├── bridge.py                   启动器
 ├── serial_bridge\
@@ -350,11 +350,12 @@ dsh-serial-bridge\
 python selfcheck_rules.py          # 32 项：四种判据 / 非法正则 / 超时 / 白名单 / 限流 / 熔断 / 通用性
 python selfcheck_port_hold.py      # 16 项：控制权↔串口句柄 的解耦
 python selfcheck_control_gate.py   # 34 项：AI 门禁 + /control 幂等与按钮矩阵
-python selfcheck_autosend.py       # 11 项：定时发送 + 轻模式不占口（假设备，无需硬件）
+python selfcheck_autosend.py       # 14 项：定时发送 + 轻模式不占口（假设备，无需硬件）
+python selfcheck_hex.py            # 11 项：十六进制按原始字节发送（假回环，无需硬件）
 python selfcheck_watch.py          # 15 项：双开关独立性 / check_source / 规则出错不影响收发（需要硬件）
 ```
 
-前四个不需要串口，拔掉设备也能跑；`selfcheck_watch.py` 找不到设备时会打印 SKIP 并以 0 退出。
+前五个不需要串口，拔掉设备也能跑；`selfcheck_watch.py` 找不到设备时会打印 SKIP 并以 0 退出。
 
 ## 已知限制
 

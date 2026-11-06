@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>串口桥</title>
+<title>鲸须</title>
 <style>
   :root {
     --bg: #1e1e1e; --panel: #252526; --line: #3c3c3c; --fg: #d4d4d4;
@@ -187,7 +187,7 @@
 </head>
 <body>
 <header>
-  <h1>串口桥</h1>
+  <h1>鲸须</h1>
   <span class="scene" id="sceneName">·</span>
   <span class="pill" id="portPill">—</span>
   <span class="pill" id="portOwner">—</span>
@@ -766,7 +766,7 @@
     post('/shutdown', {}).then(function () {
       document.body.innerHTML =
         '<div style="padding:40px;font:16px/1.8 Consolas,monospace;color:#d4d4d4">' +
-        '<h2 style="color:#3fb950">串口桥已退出</h2>' +
+        '<h2 style="color:#3fb950">鲸须已退出</h2>' +
         '<p>HTTP 服务已停止，串口已释放。可以关闭这个标签页。</p>' +
         '<p style="color:#8a8a8a">需要时重新运行：python bridge.py web --scene &lt;场景&gt;</p></div>';
       if (pollTimer) clearInterval(pollTimer);

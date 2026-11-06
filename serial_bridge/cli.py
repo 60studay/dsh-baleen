@@ -45,10 +45,11 @@ def _paths():
     """解析运行目录。
 
     注意：**手动启动网页时没有插件注入的环境变量**，所以不能只靠 env。
-    早期版本这里把 log_root 默认成插件目录下的 logs/，而插件进程用的是
-    config.json / patch 里的 <你的工作目录>\\...\\.serial-logs，于是两边各写一份
-    state 文件——网页点了[交给AI]，serial_status 却还显示 human（Bug 3）。
-    现在统一：env > config.json 的 log_root > 插件目录 logs。
+    早期版本这里把 log_root 默认成插件目录下的 logs/，而插件进程用的是配置里的路径，
+    于是两边各写一份 state 文件——网页点了[交给AI]，serial_status 却还显示 human（Bug 3）。
+
+    现在统一：env > config.json 的 log_root > 与 index.js 完全相同的默认值。
+    默认值必须是"同一个表达式"，否则开源版把 log_root 留空后又会分裂。
     """
     common_path = os.path.join(BASE, "config.json")
     common = read_json(common_path, {}) or {}
@@ -57,7 +58,7 @@ def _paths():
                      or os.path.join(BASE, "protocols"))
     log_root = (os.environ.get("SERIAL_BRIDGE_LOG_DIR")
                 or common.get("log_root")
-                or os.path.join(BASE, "logs"))
+                or default_log_root())
     runtime_root = (os.environ.get("SERIAL_BRIDGE_RUNTIME_DIR")
                     or common.get("runtime_root")
                     or os.path.join(log_root, ".runtime"))
@@ -67,6 +68,15 @@ def _paths():
         "log_root": log_root,
         "runtime_root": runtime_root,
     }
+
+
+def default_log_root():
+    """默认日志/状态目录。
+
+    必须和 index.js 的 DEFAULT_LOG_ROOT 是同一个值：
+    `~/.dsh/serial-logs`。两边不一致就会出现"两份 state、控制权不同步"（Bug 3）。
+    """
+    return os.path.join(os.path.expanduser("~"), ".dsh", "serial-logs")
 
 
 class Logger(object):
@@ -425,7 +435,7 @@ def cmd_web(paths, args):
 
 # ── 入口 ────────────────────────────────────────────────────────────────────
 def build_parser():
-    parser = argparse.ArgumentParser(description="DSH 串口桥 v2")
+    parser = argparse.ArgumentParser(description="DSH Baleen（鲸须）v2")
     sub = parser.add_subparsers(dest="action_name")
 
     sub.add_parser("scan")
@@ -493,7 +503,7 @@ def main(argv=None):
     except Exception as exc:  # 兜底：绝不把堆栈漏给插件层
         return _fail(BridgeError(
             "internal",
-            "串口桥内部错误。",
+            "鲸须内部错误。",
             hint=["把这条消息连同下面的 detail 一起反馈"],
             detail="%s: %s" % (type(exc).__name__, exc),
         ))
