@@ -76,6 +76,70 @@
   /* 命令文字给点颜色，和回显区分开——区分靠颜色和徽章，不靠 ">>" 前缀 */
   .tx { color: #9cdcfe; }
   .rx { color: var(--fg); }
+
+  /* ── 页签（串口收发 / AI 通道）────────────────────────── */
+  #tabs { display: flex; gap: 4px; }
+  .tab {
+    background: transparent; border: 1px solid var(--line); color: var(--muted);
+    padding: 5px 14px; border-radius: 5px 5px 0 0; font-size: 13px;
+  }
+  .tab:hover:not(.active) { color: var(--fg); background: #2a2a2a; }
+  .tab.active { background: var(--panel); color: var(--fg); border-bottom-color: var(--panel); }
+  .tab #chanBadge {
+    display: inline-block; margin-left: 6px; min-width: 16px; padding: 0 4px;
+    border-radius: 8px; background: var(--ai); color: #fff; font-size: 11px;
+    line-height: 16px; text-align: center;
+  }
+  .tab #chanBadge[hidden] { display: none; }
+  .pane { flex: 1; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+  .pane[hidden] { display: none; }
+
+  /* ── AI 通道 ──────────────────────────────────────────────
+     不是聊天室：每条消息都分「声明 / 证据 / 没验过的部分」三段。
+     颜色：AI-A 蓝、AI-B 绿、人 黄、其他 灰——和收发区语义一致。 */
+  #chanList {
+    flex: 1; overflow: auto; min-height: 120px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 4px; padding: 10px;
+  }
+  .chan-empty { color: var(--muted); opacity: .7; line-height: 1.8; }
+  .msg { display: grid; grid-template-columns: 56px 1fr; column-gap: 8px; margin-bottom: 12px; align-items: start; }
+  .msg > .who { justify-self: start; align-self: start; }
+  .msg .head { color: var(--muted); font-size: 11px; margin-bottom: 2px; }
+  .msg .claim { white-space: pre-wrap; word-break: break-word; }
+  .msg .ev {
+    margin-top: 5px; padding-left: 8px; border-left: 2px solid var(--line);
+    font-size: 12px; color: var(--muted);
+  }
+  .msg .ev code { color: #9cdcfe; word-break: break-all; }
+  .msg .ev pre { margin: 3px 0 0; white-space: pre-wrap; word-break: break-all;
+                 max-height: 130px; overflow: auto; font-size: 11px; }
+  .msg .nv { margin-top: 5px; font-size: 12px; color: var(--paused); }
+  .msg .nv b { font-weight: 700; }
+  .msg .acts { margin-top: 5px; }
+  #chanCompose { display: flex; flex-direction: column; gap: 6px; }
+  .chan-row { display: flex; gap: 8px; align-items: center; }
+  .chan-row select {
+    flex: 1 1 0; min-width: 0;
+    background: var(--panel); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 4px; padding: 6px 8px; font: inherit;
+  }
+  .chan-row button { flex: 0 0 auto; white-space: nowrap; }
+  #chanClaim, #chanStdout {
+    width: 100%; background: var(--panel); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 4px; padding: 8px 10px;
+    font: inherit; resize: vertical; min-height: 54px;
+  }
+  #chanEvidenceBox { border: 1px solid var(--line); border-radius: 4px; padding: 6px 10px; }
+  #chanEvidenceBox summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  #chanEvidenceBox input, #chanEvidenceBox textarea {
+    width: 100%; margin-top: 6px; background: #1d1d1d; color: var(--fg);
+    border: 1px solid var(--line); border-radius: 4px; padding: 6px 8px; font: inherit;
+  }
+  #chanEvidenceBox textarea { min-height: 60px; resize: vertical; }
+  #chanError {
+    color: #ff8a8a; font-size: 12px; line-height: 1.6;
+    border-left: 2px solid #8b2a2a; padding-left: 8px; white-space: pre-wrap;
+  }
   .composer { display: flex; gap: 8px; }
   .composer input {
     flex: 1; background: var(--panel); color: var(--fg); border: 1px solid var(--line);
@@ -238,6 +302,14 @@
 
 <main>
   <section id="consolewrap">
+    <!-- 两个页签：串口收发 / AI 通道。放同一栏而不是再开一列，
+         是因为两者都是"滚动看历史"的形态，抢宽度不如切着看。 -->
+    <div id="tabs">
+      <button class="tab active" data-pane="serial">串口收发</button>
+      <button class="tab" data-pane="channel">AI 通道<span id="chanBadge" hidden>0</span></button>
+    </div>
+
+    <div id="paneSerial" class="pane">
     <!-- 系统事件轨道：控制权/端口/告警等，与串口数据分区显示 -->
     <div id="timeline">
       <div class="tl-head"><span>状态轨道</span><span class="tl-actions"><button class="tiny ghost" id="btnReadOnce">读一次</button><button class="tiny ghost" id="btnClear">清空</button></span></div>
@@ -257,6 +329,41 @@
       <button class="ghost" data-action="pause"  id="btnPause">暂停AI</button>
       <button class="ghost" data-action="resume" id="btnResume">继续AI</button>
       <button class="ghost" data-action="human"  id="btnHuman">人类接管</button>
+    </div>
+    </div>
+
+    <div id="paneChannel" class="pane" hidden>
+      <div id="chanList">
+        <div class="chan-empty">还没有消息。<br>两个 AI 在这里交换「声明 + 证据 + 没验过的部分」。</div>
+      </div>
+      <div id="chanCompose">
+        <div class="chan-row">
+          <select id="chanFrom">
+            <option value="ai-a">AI-A（我）</option>
+            <option value="ai-b">AI-B（对面）</option>
+            <option value="human">人</option>
+          </select>
+          <select id="chanType">
+            <option value="note">对话</option>
+            <option value="claim">声明（要带证据）</option>
+            <option value="verify_req">请对方复验</option>
+            <option value="verify_res">复验结果</option>
+            <option value="reject">驳回</option>
+          </select>
+          <span class="spacer"></span>
+          <button id="chanSend">发送</button>
+        </div>
+        <textarea id="chanClaim" placeholder="要说的话。声明类消息请写清「哪件事做完了」。"></textarea>
+        <details id="chanEvidenceBox">
+          <summary>证据 / 未验证清单（声明类必填，别人要能照着复现）</summary>
+          <input type="text" id="chanCmd" placeholder="命令，例如 py bridge.py scan">
+          <textarea id="chanStdout" placeholder="完整输出（不要写「我测过了」）"></textarea>
+          <input type="text" id="chanNotVerified" placeholder="你没验过的路径，逗号分隔（这个字段最重要）">
+        </details>
+        <!-- 发送失败要说在这块里：状态轨道在另一个页签，切过去才看得见，
+             而"声明没带证据"是最常见的失败，必须当场提示。 -->
+        <div id="chanError" hidden></div>
+      </div>
     </div>
   </section>
 
@@ -1083,6 +1190,207 @@
     $('sidebar').classList.toggle('collapsed');
   });
 
+  /* ── AI 通道 ─────────────────────────────────────────────
+   *  和串口收发是两个页签，但逻辑完全独立：它不碰串口，只读写
+   *  <log_root>/channel/board.jsonl（两个 AI 共用的留言板）。
+   *
+   *  为什么每条消息都要显示「证据」和「没验过的部分」：
+   *  两个 AI 都会错，所以权威不在任何一方嘴上，而在"别人能不能照着复现"里。
+   *  not_verified 是最该看的一栏——它直接告诉你"这条别急着信"。
+   */
+  var chanSince = 0;
+  var chanSeen = [];
+  var chanUnread = 0;
+  var chanPaneActive = false;
+
+  var TYPE_LABEL = {
+    note: '对话', claim: '声明', verify_req: '请复验',
+    verify_res: '复验结果', reject: '驳回'
+  };
+
+  /** 谁发的 → 徽章样式。A 蓝、B 绿、人 黄、其他 灰（和收发区语义一致）。 */
+  function whoClass(name) {
+    var n = String(name || '').toLowerCase();
+    if (n === 'human' || n === '人') return 'auto';
+    if (n.indexOf('b') >= 0) return 'human';
+    if (n.indexOf('a') >= 0) return 'ai';
+    return 'dev';
+  }
+
+  function chanEmpty(text) {
+    var box = document.createElement('div');
+    box.className = 'chan-empty';
+    box.textContent = text;
+    return box;
+  }
+
+  function renderMessage(m) {
+    var row = document.createElement('div');
+    row.className = 'msg';
+
+    var who = document.createElement('span');
+    who.className = 'tag ' + whoClass(m.from);
+    who.textContent = m.from;
+
+    var body = document.createElement('div');
+    var head = document.createElement('div');
+    head.className = 'head';
+    head.textContent = new Date((m.ts || 0) * 1000).toLocaleTimeString() +
+      ' · ' + (TYPE_LABEL[m.type] || m.type) + ' · 信任 ' + (m.trust || 'none');
+    body.appendChild(head);
+
+    var claim = document.createElement('div');
+    claim.className = 'claim';
+    claim.textContent = m.claim || '';
+    body.appendChild(claim);
+
+    var ev = m.evidence || {};
+    if (ev.cmd) {
+      var evBox = document.createElement('div');
+      evBox.className = 'ev';
+      var cmdLine = document.createElement('div');
+      cmdLine.appendChild(document.createTextNode('$ '));
+      var code = document.createElement('code');
+      code.textContent = ev.cmd;
+      cmdLine.appendChild(code);
+      if (typeof ev.exit === 'number') {
+        cmdLine.appendChild(document.createTextNode('   (exit ' + ev.exit + ')'));
+      }
+      evBox.appendChild(cmdLine);
+      if (ev.stdout) {
+        var pre = document.createElement('pre');
+        pre.textContent = ev.stdout;
+        evBox.appendChild(pre);
+      }
+      body.appendChild(evBox);
+    }
+
+    if (m.not_verified && m.not_verified.length) {
+      var nv = document.createElement('div');
+      nv.className = 'nv';
+      var b = document.createElement('b');
+      b.textContent = '未验证：';
+      nv.appendChild(b);
+      nv.appendChild(document.createTextNode(m.not_verified.join('、')));
+      body.appendChild(nv);
+    }
+
+    if (ev.cmd) {
+      var acts = document.createElement('div');
+      acts.className = 'acts';
+      var btn = document.createElement('button');
+      btn.className = 'tiny ghost';
+      btn.textContent = '一键复验';
+      btn.title = '重跑上面那条命令，把结果作为新消息贴回通道';
+      btn.addEventListener('click', function () { verifyMessage(m.seq, btn); });
+      acts.appendChild(btn);
+      body.appendChild(acts);
+    }
+
+    row.appendChild(who);
+    row.appendChild(body);
+    return row;
+  }
+
+  function appendMessages(list) {
+    var box = $('chanList');
+    var placeholder = box.querySelector('.chan-empty');
+    if (placeholder && list.length) box.removeChild(placeholder);
+    list.forEach(function (m) {
+      chanSeen.push(m);
+      box.appendChild(renderMessage(m));
+      if (m.seq > chanSince) chanSince = m.seq;
+    });
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function pollChannel() {
+    api('/channel?since=' + chanSince).then(function (data) {
+      if (!data.ok) return;
+      var list = data.messages || [];
+      if (list.length) {
+        appendMessages(list);
+        if (!chanPaneActive) {
+          chanUnread += list.length;
+          var badge = $('chanBadge');
+          badge.hidden = false;
+          badge.textContent = String(chanUnread);
+        }
+      }
+    });
+  }
+
+  function verifyMessage(seq, btn) {
+    btn.disabled = true;
+    btn.textContent = '复验中…';
+    post('/channel/verify', { seq: seq }).then(function (data) {
+      btn.disabled = false;
+      btn.textContent = '一键复验';
+      if (!data.ok) {
+        pushEvent('bad', '复验失败：' + errLine(data.error));
+        return;
+      }
+      var r = data.result || {};
+      pushEvent(r.exit === 0 ? '' : 'warn',
+                '复验 #' + seq + '：exit=' + r.exit + '，' + r.elapsed_ms + 'ms');
+      pollChannel();   // 结论会作为新消息回到通道里
+    });
+  }
+
+  function sendChannel() {
+    var body = {
+      from: $('chanFrom').value,
+      type: $('chanType').value,
+      claim: $('chanClaim').value.trim(),
+      not_verified: $('chanNotVerified').value
+    };
+    var cmd = $('chanCmd').value.trim();
+    if (cmd) {
+      body.evidence = {
+        cmd: cmd,
+        stdout: $('chanStdout').value,
+        exit: 0
+      };
+    }
+    if (!body.claim) { pushEvent('bad', '通道消息不能是空的'); return; }
+    $('chanError').hidden = true;
+    post('/channel', body).then(function (data) {
+      if (!data.ok) {
+        // 最常见的一种拒绝：声明类消息没带证据。就地显示，别让人去另一个页签找。
+        $('chanError').hidden = false;
+        $('chanError').textContent = '发送失败：' + errText(data.error);
+        return;
+      }
+      $('chanClaim').value = '';
+      $('chanCmd').value = '';
+      $('chanStdout').value = '';
+      $('chanNotVerified').value = '';
+      pollChannel();
+    });
+  }
+
+  function switchPane(name) {
+    chanPaneActive = name === 'channel';
+    [].forEach.call(document.querySelectorAll('#tabs .tab'), function (tab) {
+      tab.classList.toggle('active', tab.getAttribute('data-pane') === name);
+    });
+    $('paneSerial').hidden = chanPaneActive;
+    $('paneChannel').hidden = !chanPaneActive;
+    if (chanPaneActive) {
+      chanUnread = 0;
+      $('chanBadge').hidden = true;
+      var box = $('chanList');
+      box.scrollTop = box.scrollHeight;
+    }
+  }
+
+  [].forEach.call(document.querySelectorAll('#tabs .tab'), function (tab) {
+    tab.addEventListener('click', function () {
+      switchPane(tab.getAttribute('data-pane'));
+    });
+  });
+  $('chanSend').addEventListener('click', sendChannel);
+
   /* ── 启动 ─────────────────────────────────────────────── */
   api('/status').then(function (data) {
     if (data.ok) renderStatus(data);
@@ -1094,10 +1402,14 @@
     loadRules();
     tick();
     startPolling();
+    pollChannel();
+    setInterval(pollChannel, 2000);
   }).catch(function () {
     loadRules();
     tick();
     startPolling();
+    pollChannel();
+    setInterval(pollChannel, 2000);
   });
 })();
 </script>

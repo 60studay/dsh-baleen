@@ -66,15 +66,17 @@ SKIP_FILES = {
 # ⚠️ 往这里加新条目 = 承认你在欠债。加之前先问：能不能现在拆？
 KNOWN_OVERSIZE = {
     "web/index.html": {
-        "lines": 1105,
+        "lines": 1417,
         # 2026-11-07 +70：收发区从 <textarea> 换成富文本容器，
         # 才能给"谁发的"上色（textarea 是纯文本控件，做不到分色）。
         # 2026-11-07 +16：实现方接手重做——两列网格（左徽章/右内容），
         # 去掉 ">>"、回显补「设备」徽章、回显对齐到命令文字的左边界。
-        # 这 70 + 16 行是必要的，不是赘肉；但仍然属于"该拆的前端"，
-        # 结构体检 R2 时连同 CSS/JS 一起拆出去。
+        # 2026-11-07 +312：新增「AI 通道」页签（两个 AI 的对话窗口）。
+        # 这 312 行里有 ~150 是 CSS、~150 是渲染逻辑，**该拆**了：
+        # 结构体检 R2 时必须把「通道」拆成独立的 channel.html/channel.js，
+        # 不能让它继续长在这个文件里。
         "reason": "单文件 HTML+CSS+JS 全在一起；计划在结构体检 R2 拆成 "
-                  "index.html / app.css / app.js",
+                  "index.html / app.css / app.js（「AI 通道」优先拆出去）",
     },
     "index.js": {
         "lines": 1006,
@@ -86,14 +88,16 @@ KNOWN_OVERSIZE = {
                   "render 与 execute 各加一段（测试方要求 AI 自授权必须在返回里明说）",
     },
     "serial_bridge/supervisor.py": {
-        "lines": 861,
+        "lines": 897,
         "reason": "已从 1262 拆过一轮（第 4.5 件），仍偏大；"
                   "计划在结构体检 R1（多轨做完）再拆。"
                   "2026-11-07 +3：control() 增加 actor 参数与自授权门禁调用"
                   "（AI 不能在人看着网页时把自己设回 ai）。"
                   "2026-11-07 +17：同上的审计改造——self_granted 留痕、"
                   "changed_by 区分 ai/web（此前 AI 接管和人类点按钮在审计里长得一样）。"
-                  "2026-11-07 +5：send() 无回显时抛 no_response（与 cli 同一语义）",
+                  "2026-11-07 +5：send() 无回显时抛 no_response（与 cli 同一语义）。"
+                  "2026-11-07 +36：AI⇄AI 通道的三个方法（list/send/verify）"
+                  "——注意它们只是转发，判定逻辑在 channel.py，别往这里搬",
     },
 }
 

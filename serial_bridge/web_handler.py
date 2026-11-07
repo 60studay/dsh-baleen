@@ -77,6 +77,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
                                    "bauds": BAUD_CHOICES})
             if path == "/rules":
                 return self._json(self.ctx["get_rules"]())
+            if path == "/channel":
+                since = int((query.get("since") or ["0"])[0])
+                limit = int((query.get("limit") or ["100"])[0])
+                return self._json(self.ctx["channel_list"](since, limit))
             if path == "/favicon.ico":
                 return self._send(204, b"")
             return self._json({"ok": False, "error": {"kind": "not_found",
@@ -114,6 +118,13 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return self._json(self.ctx["set_watch"](body))
             if path == "/rules":
                 return self._json(self.ctx["set_rules"](body))
+            if path == "/channel":
+                # AI ⇄ AI 通道：body 就是一条消息（from/type/claim/evidence/not_verified）
+                return self._json(self.ctx["channel_send"](body))
+            if path == "/channel/verify":
+                # 一键复验：把这条消息的 evidence.cmd 重跑一遍，结果贴回通道
+                return self._json(self.ctx["channel_verify"](
+                    body.get("seq"), str(body.get("actor") or "human")))
             if path == "/port/pause":
                 return self._json(self.ctx["pause_port"]())
             if path == "/port/resume":

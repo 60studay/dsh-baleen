@@ -19,6 +19,7 @@ from http.server import ThreadingHTTPServer
 import urllib.request
 
 from . import io as serial_io
+from .channel import Channel, run_evidence
 from .config import load_scene
 from .errors import BridgeError
 from .ports import resolve_port, scan_ports
@@ -45,6 +46,9 @@ class WebServer(object):
         self.state = SharedState(paths["runtime_root"], scene_name)
         from .cli import Logger  # 延迟导入避免循环
         self.logger = Logger(paths["log_root"], scene_name)
+        # AI ⇄ AI 通道：一个共享的 JSONL 留言板（不分场景——它讨论的是"活干完没"，
+        # 和具体串口无关；两个 AI 用同一个 log_root 就自动共用）
+        self.chan = Channel(paths["log_root"])
         self.mode = mode if mode in ("light", "watch") else "light"
         self.port = int(port or self.scene.cfg.get("web_port") or DEFAULT_PORT)
         self.httpd = None
@@ -248,6 +252,35 @@ class WebServer(object):
 
     def alerts(self, limit):
         return self.state.read_alerts(limit)
+
+    # ── AI ⇄ AI 通道 ────────────────────────────────────────────────────────
+    # 网页只做"窗口 + 发送口"，判定（有没有证据、能不能复验）全在 channel.py。
+    def channel_list(self, since=0, limit=100):
+        return dict({"ok": True}, **self.chan.list(since, limit))
+
+    def channel_send(self, body):
+        return {"ok": True, "message": self.chan.append(body)}
+
+    def channel_verify(self, seq, actor="human"):
+        """把某条消息的证据重跑一遍，并把**复验结果本身**作为一条新消息贴回通道。
+
+        这一步是整个通道存在的理由：
+        如果复验比信任更麻烦，人就会选择信任，那"声明/证据分离"就白设计了。
+        """
+        msg = self.chan.get(seq)
+        result = run_evidence((msg.get("evidence") or {}).get("cmd") or "")
+        stored = self.chan.append({
+            "from": actor or "human",
+            "type": "verify_res",
+            "claim": "复验 #%s：%s" % (msg.get("seq"), "通过" if result["ok"] else "失败"),
+            "evidence": {
+                "cmd": result["cmd"],
+                "stdout": result["stdout"] or result["stderr"],
+                "exit": result["exit"],
+            },
+            "reply_to": msg.get("seq"),
+        })
+        return {"ok": True, "result": result, "message": stored}
 
     # ── 动作 ────────────────────────────────────────────────────────────────
     def send(self, text, mode="text", actor="human", source="web"):
@@ -785,6 +818,9 @@ class WebServer(object):
             "reconnect": self.reconnect,
             "autodetect": self.autodetect,
             "set_mode": self.set_mode,
+            "channel_list": self.channel_list,
+            "channel_send": self.channel_send,
+            "channel_verify": self.channel_verify,
             "request_shutdown": self.request_shutdown,
         }
         url = "http://127.0.0.1:%d" % self.port

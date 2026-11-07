@@ -406,6 +406,56 @@ def run_checks(base, original):
     check("POST /control  切回原控制权成功",
           data is not None and data.get("ok") is True, str(data)[:120])
 
+    # ── AI ⇄ AI 通道（不碰串口，边界只有文件）────────────────────────────
+    # 这几条盯的是"凭什么信对面"那套规矩有没有被实现：
+    # 声明必须带证据、复验不能只写"同意"、一键复验只许跑 bridge.py。
+    status, text = http_get(base, "/channel?since=0")
+    data = as_json(text)
+    check("GET /channel  返回 200", status == 200, "status=%s" % status)
+    check("GET /channel  是 JSON 且有 messages",
+          data is not None and isinstance(data.get("messages"), list), text[:120])
+
+    status, text = http_post(base, "/channel", {
+        "from": "selfcheck", "type": "note", "claim": "自检写的一条对话"})
+    data = as_json(text)
+    check("POST /channel  纯对话可以发",
+          data is not None and data.get("ok") is True, str(data)[:120])
+    if data and data.get("message"):
+        check("POST /channel  trust 固定为 none",
+              data["message"].get("trust") == "none", str(data["message"])[:120])
+
+    status, text = http_post(base, "/channel", {
+        "from": "selfcheck", "type": "claim", "claim": "我搞定了"})
+    data = as_json(text)
+    check("POST /channel  只发结论被拒", data is not None and data.get("ok") is not True,
+          str(data)[:120])
+    check("POST /channel  拒绝原因是 config", err_kind(data) == "config", str(data)[:120])
+
+    status, text = http_post(base, "/channel/verify", {"seq": 1})
+    data = as_json(text)
+    # seq=1 可能是自检自己写的对话（没有证据）→ 拒绝；也可能是别的场景。两种都算对，
+    # 但**绝不能**是"跑了任意命令"。这里断言的是"不执行无证据的消息"。
+    check("POST /channel/verify  不执行没有 evidence 的消息",
+          data is None or data.get("ok") is not True, str(data)[:120])
+
+    status, text = http_post(base, "/channel", {
+        "from": "selfcheck", "type": "claim", "claim": "带证据的声明",
+        "evidence": {"cmd": "cmd /c dir", "stdout": "x", "exit": 0}})
+    data = as_json(text)
+    check("POST /channel  带证据的声明可以发",
+          data is not None and data.get("ok") is True, str(data)[:120])
+
+    # 一键复验的白名单：非 bridge.py 的命令必须被拒（这是网页执行命令的唯一入口）
+    if data and data.get("message"):
+        seq = data["message"]["seq"]
+        status, text = http_post(base, "/channel/verify", {"seq": seq})
+        payload = as_json(text)
+        check("POST /channel/verify  拒绝非 bridge.py 的命令",
+              payload is not None and payload.get("ok") is not True, str(payload)[:120])
+        check("POST /channel/verify  拒绝原因写在 hint 里",
+              payload is not None and bool(
+                  (payload.get("error") or {}).get("hint")), str(payload)[:160])
+
 
 def restore(base, control, watch):
     """把控制权和 watch 配置恢复成测试前的样子。
