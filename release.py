@@ -1,32 +1,52 @@
 # -*- coding: utf-8 -*-
-"""发版助手：把"更新版本号"从 1-2 小时压到一条命令。
+"""发版助手（通用版）：把"更新版本号"从几小时压到几条命令。
 
-为什么要有它
-------------
-之前发版被描述成"1~2 小时的整理工作"，那太吓人，结果就是一直不发。
+这个脚本不绑定任何具体项目，任何带 package.json 的项目都能用。
 
-但实际上这些活儿**全是机械的**：
-- 改版本号（package.json / README / 内部总账）
-- 从 git log 生成 CHANGELOG
-- 查有没有东西漏提交、有没有敏感文件混进去
-- 打 tag、推
-
-**机器能做的就不该让人做。** 这个脚本只负责机械部分；
-真正需要人的判断（这次发版值不值得、说明怎么写得好懂）会停下来问。
-
-用法
+来源
 ----
-    python release.py --check              # 只体检，不改任何东西（先跑这个）
-    python release.py --prepare 2.2.0      # 改版本号 + 生成 CHANGELOG，不提交
-    python release.py --tag 2.2.0          # 提交 + 打 tag（不推送）
-    python release.py --push               # 推送（最多试 2 次，按用户规矩）
+最初为 `dsh-serial-bridge`（鲸歌）写的，跑通后抽出来泛化。
+那次实测发现：**发版最费时间的不是改版本号，是"不知道有没有漏东西"**。
+所以这个脚本的重点在 `--check`，不在 `--prepare`。
+
+三步流程
+--------
+    python release.py --check              # 体检，只读，不改任何文件
+    python release.py --prepare 2.2.0      # 改版本号 + 生成 CHANGELOG
+    #   ↑ 中间需要人工润色 CHANGELOG（机器写的话用户看不懂）
+    python release.py --tag 2.2.0          # 提交 + 打 tag
+    python release.py --push               # 推送（默认最多试 2 次）
+
+为什么 `--check` 最重要
+------------------------
+发版出事的典型方式不是"版本号写错"，而是：
+- 内部笔记（含本机路径、设备信息）被带进公开仓库
+- 忘了跑自检，发出去是坏的
+- 工作区有未提交的改动，发出去的和你以为的不一样
+
+这些**全是机械可查的**，所以全放进 `--check`。
 
 设计原则
 --------
-1. **--check 绝不改文件**，只报告
+1. `--check` 绝不改文件
 2. 任何一步失败都停下来，不做下一半
-3. 推送失败不纠缠（用户定的规矩：最多 2 次）
-4. **不自动决定"该不该发版"**，那是人的判断
+3. 推送失败不纠缠（默认 2 次，可调）
+4. **不替你决定"该不该发版"** —— 那是人的判断
+
+配置
+----
+项目根放一个 `release.json`（可选），覆盖默认行为：
+
+    {
+      "must_ignore": ["_需求文档/", "logs/"],
+      "secret_patterns": [
+        ["C:\\\\\\\\Users\\\\\\\\[A-Za-z0-9_]+", "Windows 用户目录"]
+      ],
+      "selfcheck_glob": "selfcheck_*.py",
+      "version_files": ["package.json"]
+    }
+
+不配也行，脚本会用一组通用默认值。
 """
 
 import io
@@ -42,31 +62,62 @@ except Exception:
     pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PKG = os.path.join(HERE, "package.json")
-README = os.path.join(HERE, "README.md")
-CHANGELOG = os.path.join(HERE, "CHANGELOG.md")
+CONF = os.path.join(HERE, "release.json")
 
-# 不该进仓库的东西（发版前必须确认它们被 gitignore 挡住）
-MUST_IGNORE = [
-    "_需求文档/",               # 内部笔记
-    "_模块配置备份/",           # 含本机设备信息
-    "logs/",                    # 运行日志
-    ".runtime/",                # 运行状态
+# ── 通用默认值（项目可用 release.json 覆盖）─────────────────────────────────
+DEFAULT_MUST_IGNORE = [
+    "logs/",
+    ".runtime/",
     "_testlogs/",
 ]
 
-# 明显不该出现在公开仓库里的字符串（本机/个人信息）
-SECRET_PATTERNS = [
-    (r"C:\\\\Users\\\\[A-Za-z0-9_]+", "Windows 用户目录绝对路径"),
-    (r"E:\\\\DSH", "本机绝对路径"),
-    (r"ghp_[A-Za-z0-9]{20,}", "GitHub token"),
-    (r"github_pat_[A-Za-z0-9_]{20,}", "GitHub token"),
+DEFAULT_SECRET_PATTERNS = [
+    [r"C:\\\\Users\\\\[A-Za-z0-9_]+", "Windows 用户目录绝对路径"],
+    [r"ghp_[A-Za-z0-9]{20,}", "GitHub token"],
+    [r"github_pat_[A-Za-z0-9_]{20,}", "GitHub token"],
+    [r"sk-[A-Za-z0-9]{20,}", "API key"],
 ]
+
+DEFAULT_SELFCHECK_GLOB = "selfcheck_*.py"
+DEFAULT_VERSION_FILES = ["package.json"]
+
+# 提交信息的约定式前缀 → 中文分组
+CONV = [
+    (r"^feat", "新功能"),
+    (r"^fix", "修复"),
+    (r"^perf", "性能"),
+    (r"^refactor", "重构"),
+    (r"^test", "测试"),
+    (r"^docs", "文档"),
+    (r"^chore", "杂项"),
+    (r"^style", "样式"),
+]
+CONV_ORDER = ["新功能", "修复", "性能", "重构", "测试", "文档", "样式", "杂项", "其他"]
+
+# 推送重试次数（用户定的规矩：不纠缠）
+PUSH_ATTEMPTS = 2
+
+
+# ── 基础设施 ────────────────────────────────────────────────────────────────
+def load_conf():
+    conf = {}
+    if os.path.exists(CONF):
+        try:
+            with io.open(CONF, encoding="utf-8") as handle:
+                conf = json.load(handle) or {}
+        except Exception as exc:
+            print("⚠️ release.json 读不了，用默认值: %s" % exc)
+    return {
+        "must_ignore": conf.get("must_ignore", DEFAULT_MUST_IGNORE),
+        "secret_patterns": conf.get("secret_patterns", DEFAULT_SECRET_PATTERNS),
+        "selfcheck_glob": conf.get("selfcheck_glob", DEFAULT_SELFCHECK_GLOB),
+        "version_files": conf.get("version_files", DEFAULT_VERSION_FILES),
+    }
 
 
 def run(args, check=True):
     proc = subprocess.run(args, cwd=HERE, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace", timeout=120)
+                          encoding="utf-8", errors="replace", timeout=300)
     if check and proc.returncode != 0:
         raise SystemExit("命令失败: %s\n%s" % (" ".join(args), proc.stderr[-600:]))
     return proc
@@ -86,16 +137,25 @@ def write(path, text):
         handle.write(text)
 
 
+def glob_files(pattern):
+    """支持前缀匹配的简单 glob（不引 glob 模块，因为要跨平台一致）。"""
+    import fnmatch
+    return sorted(f for f in os.listdir(HERE) if fnmatch.fnmatch(f, pattern))
+
+
 # ── 体检 ────────────────────────────────────────────────────────────────────
 def do_check():
+    conf = load_conf()
     problems = []
-    print("=" * 66)
-    print("发版体检（只读，不改任何文件）")
-    print("=" * 66)
+    warnings = []
 
-    # 1. 工作区干净吗
-    status = git("status", "--short").stdout.strip()
+    print("=" * 68)
+    print("发版体检（只读，不改任何文件）")
+    print("=" * 68)
+
+    # 1. 工作区
     print("\n[1] 工作区")
+    status = git("status", "--short").stdout.strip()
     if status:
         print("  ⚠️ 有未提交的改动：")
         for line in status.splitlines()[:8]:
@@ -104,33 +164,44 @@ def do_check():
     else:
         print("  ✅ 干净")
 
-    # 2. 有没有没推送的提交
-    ahead = git("log", "--oneline", "origin/main..HEAD").stdout.strip()
+    # 2. 未推送提交
+    ahead = git("log", "--oneline", "origin/main..HEAD", check=False).stdout.strip()
     n_ahead = len(ahead.splitlines()) if ahead else 0
     print("\n[2] 未推送提交: %d 个" % n_ahead)
+    if n_ahead > 0:
+        warnings.append("%d 个提交还没推（发版时一起推）" % n_ahead)
 
     # 3. 自检
     print("\n[3] 自检")
-    scripts = sorted(f for f in os.listdir(HERE)
-                     if f.startswith("selfcheck_") and f.endswith(".py"))
-    total_pass = total_fail = 0
-    for name in scripts:
-        proc = subprocess.run([sys.executable, name], cwd=HERE,
-                              capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=300)
-        found = re.search(r"PASS (\d+) / FAIL (\d+)", proc.stdout or "")
-        if found:
-            total_pass += int(found.group(1))
-            total_fail += int(found.group(2))
-    print("  %d 个脚本 / %d 项通过 / %d 项失败 %s"
-          % (len(scripts), total_pass, total_fail,
-             "✅" if total_fail == 0 else "❌"))
-    if total_fail:
-        problems.append("%d 项自检失败" % total_fail)
+    scripts = glob_files(conf["selfcheck_glob"])
+    if not scripts:
+        print("  （没有匹配 %s 的自检脚本，跳过）" % conf["selfcheck_glob"])
+    else:
+        total_pass = total_fail = 0
+        failed_names = []
+        for name in scripts:
+            proc = subprocess.run([sys.executable, name], cwd=HERE,
+                                  capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", timeout=600)
+            found = re.search(r"PASS (\d+) / FAIL (\d+)", proc.stdout or "")
+            if found:
+                p, f = int(found.group(1)), int(found.group(2))
+                total_pass += p
+                total_fail += f
+                if f:
+                    failed_names.append("%s(%d)" % (name, f))
+        print("  %d 个脚本 / %d 项通过 / %d 项失败 %s"
+              % (len(scripts), total_pass, total_fail,
+                 "✅" if total_fail == 0 else "❌"))
+        if failed_names:
+            print("  失败的: " + ", ".join(failed_names))
+            problems.append("%d 项自检失败" % total_fail)
 
-    # 4. gitignore 是否挡住内部文件
+    # 4. gitignore 挡住内部文件
     print("\n[4] 内部文件是否被挡住")
-    for path in MUST_IGNORE:
+    if not conf["must_ignore"]:
+        print("  （没配置，跳过）")
+    for path in conf["must_ignore"]:
         probe = os.path.join(HERE, path.rstrip("/"), "_probe_.txt")
         proc = subprocess.run(["git", "check-ignore", "-q", probe],
                               cwd=HERE, capture_output=True)
@@ -139,12 +210,17 @@ def do_check():
         if not ignored:
             problems.append("%s 没被 gitignore" % path)
 
-    # 5. 敏感信息扫描（只扫会入库的文件）
+    # 5. 敏感信息
     print("\n[5] 敏感信息扫描")
-    tracked = run(["git", "ls-files"]).stdout.splitlines()
+    tracked = run(["git", "ls-files"], check=False).stdout.splitlines()
+    # 配置文件自己会列出敏感词，扫它必然自命中
+    SKIP = {"release.json", "release.py"}
     hits = []
     for rel in tracked:
-        if not rel.endswith((".py", ".js", ".html", ".css", ".json", ".md", ".yml")):
+        if os.path.basename(rel) in SKIP:
+            continue
+        if not rel.endswith((".py", ".js", ".ts", ".html", ".css",
+                             ".json", ".md", ".yml", ".yaml", ".toml")):
             continue
         full = os.path.join(HERE, rel)
         if not os.path.exists(full):
@@ -153,26 +229,34 @@ def do_check():
             text = read(full)
         except Exception:
             continue
-        for pattern, label in SECRET_PATTERNS:
+        for item in conf["secret_patterns"]:
+            pattern, label = item[0], item[1]
             if re.search(pattern, text):
                 hits.append((rel, label))
     if hits:
-        for rel, label in hits[:10]:
+        for rel, label in hits[:12]:
             print("  ❌ %s → %s" % (rel, label))
         problems.append("发现 %d 处敏感信息" % len(hits))
     else:
-        print("  ✅ 没发现绝对路径 / token")
+        print("  ✅ 没发现")
 
-    # 6. 版本号一致性
+    # 6. 版本号
     print("\n[6] 版本号")
-    pkg = json.loads(read(PKG))
-    version = pkg.get("version", "")
-    print("  package.json: %s" % version)
-    if version and version not in read(README):
-        print("  ⚠️ README 里没提到这个版本号（不一定是问题）")
+    for name in conf["version_files"]:
+        full = os.path.join(HERE, name)
+        if not os.path.exists(full):
+            continue
+        try:
+            data = json.loads(read(full))
+            print("  %s: %s" % (name, data.get("version", "?")))
+        except Exception:
+            print("  %s: 读不了" % name)
 
     # 结论
-    print("\n" + "=" * 66)
+    print("\n" + "=" * 68)
+    if warnings:
+        for item in warnings:
+            print("  ℹ️ " + item)
     if problems:
         print("体检没通过，先处理：")
         for item in problems:
@@ -183,35 +267,22 @@ def do_check():
     return 0
 
 
-# ── 生成 CHANGELOG ─────────────────────────────────────────────────────────
-CONV = [
-    (r"^feat", "新功能"),
-    (r"^fix", "修复"),
-    (r"^refactor", "重构"),
-    (r"^docs", "文档"),
-    (r"^test", "测试"),
-    (r"^chore", "杂项"),
-]
-
-
+# ── CHANGELOG ──────────────────────────────────────────────────────────────
 def collect_commits(since_tag=None):
-    """拿提交，按约定式前缀分组。"""
     args = ["log", "--pretty=%s", "--no-merges"]
     if since_tag:
         args.append("%s..HEAD" % since_tag)
-    out = git(*args).stdout.strip()
+    out = git(*args, check=False).stdout.strip()
     groups = {}
     for line in out.splitlines():
         text = line.strip()
         if not text:
             continue
-        placed = False
         for pattern, label in CONV:
             if re.match(pattern, text):
                 groups.setdefault(label, []).append(text)
-                placed = True
                 break
-        if not placed:
+        else:
             groups.setdefault("其他", []).append(text)
     return groups
 
@@ -220,54 +291,56 @@ def do_prepare(new_version):
     if not re.match(r"^\d+\.\d+\.\d+$", new_version):
         raise SystemExit("版本号格式应为 x.y.z，收到 %r" % new_version)
 
-    pkg = json.loads(read(PKG))
-    old_version = pkg.get("version", "?")
-    print("版本号 %s → %s" % (old_version, new_version))
+    conf = load_conf()
+    for name in conf["version_files"]:
+        full = os.path.join(HERE, name)
+        if not os.path.exists(full):
+            continue
+        try:
+            data = json.loads(read(full))
+        except Exception:
+            continue
+        old = data.get("version", "?")
+        data["version"] = new_version
+        write(full, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+        print("  ✅ %s: %s → %s" % (name, old, new_version))
 
-    # 1. package.json
-    pkg["version"] = new_version
-    write(PKG, json.dumps(pkg, ensure_ascii=False, indent=2) + "\n")
-    print("  ✅ package.json")
-
-    # 2. 最近一个 tag，用来收集"这次发了什么"
     tag_out = git("describe", "--tags", "--abbrev=0", check=False).stdout.strip()
     groups = collect_commits(tag_out or None)
-    print("  收集到 %d 组提交（自 %s）" % (len(groups), tag_out or "开始"))
+    print("  收集到 %d 组提交（自 %s）"
+          % (len(groups), tag_out or "仓库开始"))
 
-    # 3. 生成 CHANGELOG 片段
     lines = ["## v%s（%s）" % (new_version, _today()), ""]
-    order = ["新功能", "修复", "重构", "测试", "文档", "杂项", "其他"]
-    for label in order:
+    for label in CONV_ORDER:
         items = groups.get(label)
         if not items:
             continue
         lines.append("### %s" % label)
         for item in items:
-            # 去掉约定式前缀，让人能读懂
-            clean = re.sub(r"^\w+(\([^)]*\))?:\s*", "", item)
+            clean = re.sub(r"^\w+(\([^)]*\))?!?:\s*", "", item)
             lines.append("- %s" % clean)
         lines.append("")
     block = "\n".join(lines)
 
-    if os.path.exists(CHANGELOG):
-        old = read(CHANGELOG)
-        # 插在第一个 "## v" 之前
+    changelog = os.path.join(HERE, "CHANGELOG.md")
+    if os.path.exists(changelog):
+        old = read(changelog)
         idx = old.find("\n## v")
-        new_text = (old[:idx + 1] + block + old[idx + 1:]) if idx > 0 else (old + "\n" + block)
+        text = (old[:idx + 1] + block + old[idx + 1:]) if idx > 0 else (old + "\n" + block)
     else:
-        new_text = ("# 更新日志\n\n"
-                    "> 从 v2.1.0 之后开始记录。\n"
-                    "> 格式按类型分组，条目由 `release.py` 从 git log 机械生成，"
-                    "发版前请**人工润色成用户看得懂的话**。\n\n" + block)
-    write(CHANGELOG, new_text)
+        text = ("# 更新日志\n\n"
+                "> 条目由 `release.py` 从 git log 机械生成，"
+                "**发版前请人工润色成用户看得懂的话**"
+                "（机器写的话通常带内部黑话）。\n\n" + block)
+    write(changelog, text)
     print("  ✅ CHANGELOG.md（%d 条）" % sum(len(v) for v in groups.values()))
 
-    print("\n" + "=" * 66)
+    print("\n" + "=" * 68)
     print("已准备好，但**没有提交**。请你先：")
     print("  1. 打开 CHANGELOG.md，把机器生成的话改成用户看得懂的")
-    print("  2. 确认 README 的「已验证范围」是否需要更新")
+    print("  2. 确认 README 有没有需要更新的内容")
     print("  3. 然后跑: python release.py --tag %s" % new_version)
-    print("=" * 66)
+    print("=" * 68)
     return 0
 
 
@@ -283,22 +356,21 @@ def do_tag(version):
     return 0
 
 
-def do_push(attempts=2):
-    """推送。按用户规矩：最多试 2 次。"""
+def do_push(attempts=PUSH_ATTEMPTS):
     for i in range(1, attempts + 1):
         print("推送第 %d/%d 次 ..." % (i, attempts))
         proc = git("push", "origin", "main", "--follow-tags", check=False)
         if proc.returncode == 0:
             print("  ✅ 推送成功")
-            print(proc.stdout[-300:])
+            print((proc.stdout or "")[-300:])
             return 0
         print("  失败: %s" % (proc.stderr or proc.stdout).strip()[-200:])
         if i < attempts:
             print("  等 3 秒重试 ...")
             import time
             time.sleep(3)
-    print("\n连续 %d 次失败，按规矩停手。" % attempts)
-    print("把这件事记进 `_需求文档/待办-推送未完成.md`，下次会话再试。")
+    print("\n连续 %d 次失败，按规矩停手（不纠缠）。" % attempts)
+    print("把这件事记进待办文件，下次会话再试。")
     return 1
 
 
