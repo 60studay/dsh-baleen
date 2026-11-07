@@ -128,3 +128,8 @@ bindSplitter($('hsplit'), function (e) {
 document.addEventListener('mouseup', function () {
   if (layout) saveLayout(layout);
 });
+
+// 侧边栏收起/展开：属于布局，跟规则无关，所以放在这一层。
+sidebarToggle.addEventListener('click', function () {
+  sidebar.classList.toggle('collapsed');
+});

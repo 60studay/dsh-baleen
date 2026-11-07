@@ -203,10 +203,18 @@ def run_checks(base, original):
     # R2b：逻辑拆成 ES module，两个模块也必须能取到，否则页面白屏
     core_status, core_text = http_get(base, "/js/core.js")
     layout_status, layout_text = http_get(base, "/js/layout.js")
+    rules_status, rules_text = http_get(base, "/js/rules.js")
+    chan_status, chan_text = http_get(base, "/js/channel.js")
     check("GET /js/core.js   返回 200", core_status == 200, "status=%s" % core_status)
     check("GET /js/layout.js 返回 200", layout_status == 200, "status=%s" % layout_status)
+    check("GET /js/rules.js  返回 200", rules_status == 200, "status=%s" % rules_status)
+    check("GET /js/channel.js 返回 200", chan_status == 200, "status=%s" % chan_status)
     check("GET /js/core.js   是 ES module",
           "export" in core_text, core_text[:60])
+    check("GET /js/rules.js  有导出", "export function loadRules" in rules_text,
+          rules_text[:60])
+    check("GET /js/channel.js 有导出", "export function pollChannel" in chan_text,
+          chan_text[:60])
     check("页面用 type=module 加载",
           'type="module"' in text, text[:80])
     check("GET /app.css  是 CSS", "#" in css_text and "{" in css_text, css_text[:60])
