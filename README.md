@@ -432,6 +432,13 @@ python selfcheck_watch.py          # 15 项：双开关独立性 / check_source 
 
 ## 许可协议（License）
 
+> **作者与署名**：本项目作者为 **刘实**（GitHub：[@60studay](https://github.com/60studay)）。
+>
+> 早期提交中出现的 `whalesong-dev <dev@local>`、`dsh-baleen <baleen@local>`
+> 是开发过程中使用的临时占位名，**实际作者均为刘实**。
+>
+> 开发过程的完整记录（两个 AI 的对话存档）见 [`_对话存档/`](_对话存档/)。
+
 **本项目自 `v2.1.0` 起采用 [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0)。**
 
 ### 白话说明

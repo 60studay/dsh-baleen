@@ -4,6 +4,12 @@
   "private": true,
   "type": "module",
   "license": "PolyForm-Noncommercial-1.0.0",
+  "author": "刘实 (github.com/60studay)",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/60studay/dsh-whalesong.git"
+  },
+  "homepage": "https://github.com/60studay/dsh-whalesong#readme",
   "description": "通用串口工具：自动匹配端口、三类结构化错误、双开关监视与异常自动处置、控制权状态机",
   "main": "index.js",
   "exports": {
