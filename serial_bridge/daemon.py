@@ -148,7 +148,10 @@ class Daemon(object):
                 self.stats["rx_bytes"] += len(chunk)
                 self.no_response_streak = 0
                 self.logger.append("RX", chunk.decode("utf-8", errors="replace"))
-                self.touch()
+                # 这里**不能** touch()：空闲计时的语义是"还有没有客户端在用我"，
+                # 不是"有没有数据进来"。早期版本在这里刷新时间戳，结果一个持续
+                # 刷数据的设备会让管家永不空闲退出、一直霸着串口
+                # （实测：STC8G 靶子连发 OK PONG）。
                 # 监视模式：不等"某条命令的窗口"，来什么判什么
                 if self.mode == "watch" and now > self.judge_deadline:
                     self._maybe_check(chunk.decode("utf-8", errors="replace"), "watch")
