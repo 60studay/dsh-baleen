@@ -66,7 +66,12 @@ SKIP_FILES = {
 # ⚠️ 往这里加新条目 = 承认你在欠债。加之前先问：能不能现在拆？
 KNOWN_OVERSIZE = {
     "web/index.html": {
-        "lines": 1019,
+        "lines": 1089,
+        # 2026-11-07 +70：收发区从 <textarea> 换成富文本容器，
+        # 才能给"谁发的"上色（textarea 是纯文本控件，做不到分色）。
+        # 加了三套徽章样式 + appendTx() + 富文本 append()。
+        # 这 70 行是必要的，不是赘肉；但仍然属于"该拆的前端"，
+        # 结构体检 R2 时连同 CSS/JS 一起拆出去。
         "reason": "单文件 HTML+CSS+JS 全在一起；计划在结构体检 R2 拆成 "
                   "index.html / app.css / app.js",
     },

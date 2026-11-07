@@ -44,11 +44,35 @@
 
   /* 主区 */
   #consolewrap { flex: 1; display: flex; flex-direction: column; min-width: 0; padding: 10px 12px; gap: 10px; }
+  /* 回显区：从 <textarea> 换成富文本容器，才能给"谁发的"上颜色。
+     textarea 是纯文本控件，做不到分色，所以必须换。
+     代价：要自己实现滚动、清空、以及空状态提示。 */
   #console {
-    flex: 1; width: 100%; resize: none; background: var(--panel); color: var(--fg);
+    flex: 1; width: 100%; background: var(--panel); color: var(--fg);
     border: 1px solid var(--line); border-radius: 4px; padding: 10px;
-    font: inherit; white-space: pre; overflow: auto; min-height: 120px;
+    font: inherit; overflow: auto; min-height: 120px;
+    white-space: pre-wrap; word-break: break-all; outline: none;
   }
+  #console:empty::before {
+    content: attr(placeholder); color: var(--muted); opacity: .55;
+  }
+  #console .ln { display: block; }
+  /* ── 收发方向徽章：一眼分清是谁发的 ────────────────────
+     颜色沿用已有的语义色：AI=蓝、人=绿、定时=黄、设备=灰。
+     徽章做成等宽小方块，竖排时能对齐，扫视不吃力。 */
+  .tag {
+    display: inline-block; min-width: 34px; padding: 0 5px; margin-right: 6px;
+    border-radius: 3px; font-size: 11px; font-weight: 700;
+    text-align: center; line-height: 1.5; vertical-align: 1px;
+    user-select: none;
+  }
+  .tag.ai   { background: rgba(47,129,247,.22); color: var(--ai);    border: 1px solid var(--ai); }
+  .tag.human{ background: rgba(63,185,80,.22);  color: var(--human); border: 1px solid var(--human); }
+  .tag.auto { background: rgba(210,153,34,.22); color: var(--paused);border: 1px solid var(--paused); }
+  .tag.dev  { background: rgba(138,138,138,.18);color: var(--muted); border: 1px solid var(--line); }
+  /* 命令本身也给点颜色，和回显区分开 */
+  .tx { color: #9cdcfe; }
+  .rx { color: var(--fg); }
   .composer { display: flex; gap: 8px; }
   .composer input {
     flex: 1; background: var(--panel); color: var(--fg); border: 1px solid var(--line);
@@ -216,7 +240,7 @@
       <div class="tl-head"><span>状态轨道</span><span class="tl-actions"><button class="tiny ghost" id="btnReadOnce">读一次</button><button class="tiny ghost" id="btnClear">清空</button></span></div>
       <div id="timelineList"></div>
     </div>
-    <textarea id="console" readonly spellcheck="false" placeholder="串口收发内容会显示在这里…"></textarea>
+    <div id="console" tabindex="0" placeholder="串口收发内容会显示在这里…"></div>
     <div class="composer">
       <input id="cmd" placeholder="输入指令后回车发送" autocomplete="off">
       <button id="sendBtn">发送</button>
@@ -398,13 +422,59 @@
     box.scrollTop = box.scrollHeight;
   }
 
+  /* ── 回显区渲染 ─────────────────────────────────────────
+   *  从 textarea 换成 div 之后，append() 不再"往字符串末尾贴"，
+   *  而是"往最后一个文本块末尾贴"，这样徽章那一行不会被拆散。
+   *
+   *  设计要点：
+   *  - 徽章只在"一条命令"开头出现一次，回显跟在同一行的后面
+   *  - 连续的回显会粘在同一个块里（串口本来就是流，不该逐字节换行）
+   *  - 超过长度就丢最老的，避免长时间跑内存涨爆
+   */
+  var MAX_CHARS = 300000;
+
+  function trimConsole() {
+    while (consoleEl.textContent.length > MAX_CHARS && consoleEl.firstChild) {
+      consoleEl.removeChild(consoleEl.firstChild);
+    }
+  }
+
   function append(text) {
     if (!text) return;
-    consoleEl.value += text;
-    consoleEl.scrollTop = consoleEl.scrollHeight;
-    if (consoleEl.value.length > 400000) {
-      consoleEl.value = consoleEl.value.slice(-300000);
+    // 回显：贴到最后一个块里；没有块就新建一个
+    var last = consoleEl.lastChild;
+    if (!last || last.nodeType !== 1 || !last.classList.contains('rx-block')) {
+      last = document.createElement('span');
+      last.className = 'rx-block rx';
+      consoleEl.appendChild(last);
     }
+    last.appendChild(document.createTextNode(text));
+    consoleEl.scrollTop = consoleEl.scrollHeight;
+    trimConsole();
+  }
+
+  /** 打一行"谁发的 + 命令"，后面紧跟的回显会自动贴在这一行下面。
+   *  who: 'ai' | 'human' | 'auto' | 'dev'
+   */
+  function appendTx(who, command) {
+    var label = { ai: 'AI', human: '我', auto: '定时', dev: '设备' }[who] || who;
+    var row = document.createElement('div');
+    row.className = 'ln tx-row';
+    var tag = document.createElement('span');
+    tag.className = 'tag ' + who;
+    tag.textContent = label;
+    var body = document.createElement('span');
+    body.className = 'tx';
+    body.textContent = '>> ' + command;
+    row.appendChild(tag);
+    row.appendChild(body);
+    consoleEl.appendChild(row);
+    // 换行块，让后面的回显从新的一行开始
+    var block = document.createElement('span');
+    block.className = 'rx-block rx';
+    consoleEl.appendChild(block);
+    consoleEl.scrollTop = consoleEl.scrollHeight;
+    trimConsole();
   }
 
   function api(path, options) {
@@ -609,8 +679,8 @@
       if (!data.ok) return;
       // 自动发送 / AI 发起的每一帧：先打来源+命令，再打回显
       (data.frames || []).forEach(function (f) {
-        var tag = f.source === 'ai' ? '[AI] ' : (f.source === 'auto' ? '[定时] ' : '');
-        append(tag + '>> ' + f.tx + '\n');
+        var who = f.source === 'ai' ? 'ai' : (f.source === 'auto' ? 'auto' : 'dev');
+        appendTx(who, f.tx);
         if (dispMode === 'hex') {
           if (f.hex) append(f.hex + '\n');
         } else if (f.rx) {
@@ -642,7 +712,7 @@
         pushEvent('bad', '发送失败：' + errLine(data.error));
         return;
       }
-      append('>> ' + text + '\n');
+      appendTx('human', text);
       if (data.rx_text || data.rx_hex) {
         if (dispMode === 'hex') append(data.rx_hex + '\n');
         else if (data.rx_text) append(data.rx_text);
@@ -664,7 +734,7 @@
 
   // 清空回显区（状态轨道保留，方便对照）
   $('btnClear').addEventListener('click', function () {
-    consoleEl.value = '';
+    consoleEl.textContent = '';
     consoleEl.scrollTop = 0;
   });
 
