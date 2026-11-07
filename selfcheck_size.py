@@ -71,18 +71,22 @@ KNOWN_OVERSIZE = {
                   "index.html / app.css / app.js",
     },
     "index.js": {
-        "lines": 994,
+        "lines": 1006,
         "reason": "9 个工具的定义挤在一个文件；计划在结构体检 R2 按"
                   "『工具组』拆（串口/管家/网页）。"
                   "2026-11-07 +8：serial_status 的 output.schema 补上 transport 字段"
-                  "（此前 execute 返回它但 schema 没声明，导致该工具每次调用都被校验拒绝）",
+                  "（此前 execute 返回它但 schema 没声明，导致该工具每次调用都被校验拒绝）。"
+                  "2026-11-07 +12：serial_control 的自授权审计——schema 补 selfGranted/note，"
+                  "render 与 execute 各加一段（测试方要求 AI 自授权必须在返回里明说）",
     },
     "serial_bridge/supervisor.py": {
-        "lines": 839,
+        "lines": 856,
         "reason": "已从 1262 拆过一轮（第 4.5 件），仍偏大；"
                   "计划在结构体检 R1（多轨做完）再拆。"
                   "2026-11-07 +3：control() 增加 actor 参数与自授权门禁调用"
-                  "（AI 不能在人看着网页时把自己设回 ai）",
+                  "（AI 不能在人看着网页时把自己设回 ai）。"
+                  "2026-11-07 +17：同上的审计改造——self_granted 留痕、"
+                  "changed_by 区分 ai/web（此前 AI 接管和人类点按钮在审计里长得一样）",
     },
 }
 

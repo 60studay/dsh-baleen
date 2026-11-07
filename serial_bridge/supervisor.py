@@ -359,8 +359,20 @@ class WebServer(object):
             raise BridgeError("config", "未知的控制动作：%r" % action)
         target, label, sources = mapping[action]
         # AI 不能在人看着网页时自己把控制权抢回去
+        # "自授权"= 调用方是 AI 且当前没人在看网页；这一步必须留痕（见 cli.cmd_control）
+        actor_id = str(actor or "human").lower()
+        self_granted = bool(
+            target == STATE_AI and actor_id == "ai" and not self.state.presence_alive()
+        )
         if target == STATE_AI:
             self.state.assert_self_grant_allowed(actor)
+        # 状态文件里的 changed_by 要记"谁真正点的"，不能一律写 web：
+        # 否则 AI 自己接管和人类点按钮在审计里长得一模一样。
+        changed_by = "ai" if actor_id == "ai" else "web"
+        audit = " ".join([
+            "⚠ 你现在是以 AI 身份自授权：当前无人在看网页，控制权由 AI 自己取得，"
+            "已记入状态文件 changed_by=ai（可审计）。" if self_granted else ""
+        ]).strip()
         current_state = self.state.read().get("state")
         # 幂等：已经是目标状态就当作成功，不要报 400。
         # （早期版本把 human->human 当成非法迁移，导致"已经在人类手中"时
@@ -372,7 +384,8 @@ class WebServer(object):
                 "state": self.state.read(),
                 "port_action": "unchanged",
                 "watch_running": self.loop.running,
-                "note": "已经是%s，无需切换" % label,
+                "self_granted": self_granted,
+                "note": " ".join(["已经是%s，无需切换" % label, audit]).strip(),
             }
         if current_state not in sources:
             raise BridgeError(
@@ -382,7 +395,7 @@ class WebServer(object):
                       "paused 可以[交给AI]/[继续AI]/[人类接管]"],
             )
         try:
-            current = self.state.set_state(target, "web", label)
+            current = self.state.set_state(target, changed_by, label)
         except ValueError as exc:
             raise BridgeError("control_blocked", "状态迁移被拒绝（%s）。" % exc)
 
@@ -391,13 +404,17 @@ class WebServer(object):
         forced = self.ports.reconcile("web-control") or {}
         port_action = forced.get("action", "unchanged")
 
-        return {
+        result = {
             "ok": True,
             "control": current.get("state"),
             "state": current,
             "port_action": port_action,
             "watch_running": self.loop.running,
+            "self_granted": self_granted,
         }
+        if audit:
+            result["note"] = audit
+        return result
 
     def set_watch(self, body):
         current = self.state.read()

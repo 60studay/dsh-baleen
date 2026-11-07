@@ -417,14 +417,29 @@ def cmd_control(paths, args):
 
     # AI 不能在人看着网页时自己把控制权抢回去（见 state.assert_self_grant_allowed）
     requester = (getattr(args, "by", None) or "cli")
+    # "自授权"= 调用方是 AI 且当前没人在看网页（有人看时上面那行会直接拒绝）。
+    # 这一步要留痕：调用方自己也该看到"这次是你自己拿的"，否则等于偷偷越权。
+    self_granted = bool(
+        target == STATE_AI
+        and str(requester).lower() == "ai"
+        and not state.presence_alive()
+    )
     if target == STATE_AI:
         state.assert_self_grant_allowed(requester)
+
+    notes = []
+    if self_granted:
+        notes.append(
+            "⚠ 你现在是以 AI 身份自授权：当前无人在看网页，控制权由 AI 自己取得，"
+            "已记入状态文件 changed_by=ai（可审计）。"
+        )
 
     current_state = state.read().get("state")
     # 幂等：已经在目标状态就直接成功（重按同一个按钮不该报错）
     if current_state == target:
         return _ok({"scene": scene.name, "state": state.read(),
-                    "note": "已经是%s，无需切换" % label})
+                    "self_granted": self_granted,
+                    "note": " ".join(["已经是%s，无需切换" % label] + notes)})
     if current_state not in sources:
         raise BridgeError(
             "control_blocked",
@@ -437,7 +452,10 @@ def cmd_control(paths, args):
         current = state.set_state(target, args.by, label)
     except ValueError as exc:
         raise BridgeError("control_blocked", "状态迁移被拒绝（%s）。" % exc)
-    return _ok({"scene": scene.name, "state": current})
+    data = {"scene": scene.name, "state": current, "self_granted": self_granted}
+    if notes:
+        data["note"] = " ".join(notes)
+    return _ok(data)
 
 
 def _default_scene(paths):

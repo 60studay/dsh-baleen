@@ -815,6 +815,11 @@ export function apply(ctx, config = {}) {
           scene: { type: 'string' },
           state: { type: 'string', description: 'human | ai | paused' },
           changedBy: { type: 'string' },
+          selfGranted: {
+            type: 'boolean',
+            description: 'true when the AI took control itself with nobody watching the web UI',
+          },
+          note: { type: 'string' },
         },
       },
       render: (_args, value) => [{
@@ -822,7 +827,11 @@ export function apply(ctx, config = {}) {
         text: [
           `<scene>${value.scene}</scene>`,
           `<control state="${value.state}" by="${value.changedBy}"/>`,
-        ].join('\n'),
+          value.selfGranted
+            ? '<audit self_granted="true">你这次是以 AI 身份自授权的（无人在看网页），已记入 changed_by=ai</audit>'
+            : '',
+          value.note && !value.selfGranted ? `<note>${value.note}</note>` : '',
+        ].filter(Boolean).join('\n'),
       }],
     },
     isConcurrencySafe: () => false,
@@ -835,11 +844,14 @@ export function apply(ctx, config = {}) {
       }
       const data = await runCli(['control', '--scene', scene, '--action', action, '--by', 'ai']);
       const current = data.state ?? {};
-      return {
+      const out = {
         scene: data.scene ?? scene,
         state: current.state ?? 'human',
         changedBy: current.changed_by ?? '',
       };
+      if (data.self_granted) out.selfGranted = true;
+      if (data.note) out.note = String(data.note);
+      return out;
     },
   });
 

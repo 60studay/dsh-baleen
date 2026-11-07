@@ -141,6 +141,31 @@ def main():
             result, _ = apply_action(st, action)
             check("%-6s + %-6s → %s" % (source, action, expected), result == expected, result)
 
+        print("\n[7] AI 自授权门禁：有人看网页不许 AI 自己接管")
+        from serial_bridge.errors import BridgeError
+        import time as _t2
+
+        st.force_state(STATE_HUMAN, "test", "set")
+        st.update(presence=0)  # 没人看网页 = "把活交给 AI" 的场景
+        try:
+            st.assert_self_grant_allowed("ai")
+            check("headless 时 AI 可自授权", True)
+        except BridgeError:
+            check("headless 时 AI 可自授权", False, "被错误拒绝")
+
+        st.update(presence=_t2.time())  # 有人正在看网页
+        try:
+            st.assert_self_grant_allowed("ai")
+            check("有人看网页时拒绝 AI 自授权", False, "没有拒绝")
+        except BridgeError as exc:
+            check("有人看网页时拒绝 AI 自授权", exc.kind == "control_blocked", exc.kind)
+
+        try:
+            st.assert_self_grant_allowed("human")
+            check("人类身份不受自授权规则限制", True)
+        except BridgeError:
+            check("人类身份不受自授权规则限制", False, "被错误拒绝")
+
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
