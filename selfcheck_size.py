@@ -65,20 +65,6 @@ SKIP_FILES = {
 #
 # ⚠️ 往这里加新条目 = 承认你在欠债。加之前先问：能不能现在拆？
 KNOWN_OVERSIZE = {
-    "serial_bridge/supervisor.py": {
-        "lines": 1027,
-        "reason": "已从 1262 拆过一轮（第 4.5 件），仍偏大；"
-                  "计划在结构体检 R1（多轨做完）再拆。"
-                  "2026-11-07 +3：control() 增加 actor 参数与自授权门禁调用"
-                  "（AI 不能在人看着网页时把自己设回 ai）。"
-                  "2026-11-07 +17：同上的审计改造——self_granted 留痕、"
-                  "changed_by 区分 ai/web（此前 AI 接管和人类点按钮在审计里长得一样）。"
-                  "2026-11-07 +5：send() 无回显时抛 no_response（与 cli 同一语义）。"
-                  "2026-11-07 +36：AI⇄AI 通道的三个方法（list/send/verify）"
-                  "——注意它们只是转发，判定逻辑在 channel.py，别往这里搬。"
-                  "2026-11-07 +50：规则数据源统一（effective_watch）+ /watch 不写空值 + check_source 别名归一"
-                  "（/status 的 rules 永远是 0 条、check_source 被写成空串，两个真 bug）。2026-11-07 +29：R2 之后要发 app.css/app.js，新增 _load_asset（静态文件白名单）。2026-11-07 +31：autodetect 真的会猜（guess_port）+ 序列号一并回传。2026-11-07 +14：probe_port / clear_alerts 两个显式入口（不再每 5 秒偷偷开串口）",
-    },
 }
 
 PASS = []

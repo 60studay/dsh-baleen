@@ -20,25 +20,30 @@ import urllib.request
 
 from . import io as serial_io
 from .channel import Channel, run_evidence
-from .config import load_scene
 from .errors import BridgeError
-from .ports import resolve_port, scan_ports, guess_port
+from .ports import BAUD_CHOICES, resolve_port, scan_ports, guess_port  # noqa: F401
 from .port_manager import PortManager
 from .rule_checker import RuleChecker
 from .watch_loop import WatchLoop
 from .web_handler import BridgeHandler
-from .rules import RULE_TYPES, CHECK_SOURCES, merge_watch, normalize_check_source
 from .runner import RuleWorker
 from .state import SharedState, STATE_AI, STATE_HUMAN, STATE_PAUSED, VALID_STATES, _safe_name
 from .transport import describe_transport as transport_describe
 # BAUD_CHOICES 定义在 ports.py（路由层 web_handler 也要用，不该反过来依赖这里）
-from .ports import BAUD_CHOICES  # noqa: F401  （对外仍可 from supervisor import BAUD_CHOICES）
+from .ports import resolve_port, scan_ports, guess_port
 
 DEFAULT_PORT = 8899
 
 
+from .config import load_scene
+from .web.status import StatusMixin
+from .web.rules import RulesMixin
+from .web.channel import ChannelMixin
+from .web.serial import SerialMixin
+from .web.ports import PortMixin
 
-class WebServer(object):
+
+class WebServer(StatusMixin, RulesMixin, ChannelMixin, SerialMixin, PortMixin):
     def __init__(self, paths, scene_name, port=None, mode="light"):
         self.paths = paths
         self.scene_name = scene_name
@@ -76,6 +81,7 @@ class WebServer(object):
                                            "%s.web.json" % _safe_name(scene_name))
         self._page = _load_page()
 
+
     # ── 配置与端口 ──────────────────────────────────────────────────────────
     def effective_cfg(self):
         cfg = dict(self.scene.cfg)
@@ -85,9 +91,11 @@ class WebServer(object):
             cfg["baud"] = self.override_baud
         return cfg
 
+
     def current_device(self):
         resolved = resolve_port(self.effective_cfg())
         return resolved
+
 
     # ── 串口占用生命周期（与控制权解耦）────────────────────────────────────
     #
@@ -116,6 +124,7 @@ class WebServer(object):
             url = None
         self._daemon_cache = (now, url)
         return url
+
 
     def _proxy_send_to_daemon(self, command, mode, actor, source):
         """管家在跑就让它发；返回 None 表示"没管家，走原来的路"。"""
@@ -147,619 +156,6 @@ class WebServer(object):
             "note": "经由管家（常驻连接）",
         }
 
-    # ── 状态 ────────────────────────────────────────────────────────────────
-    def effective_watch(self):
-        """网页看到、判定用的 watch 配置：**配置打底、状态覆盖，空值不覆盖**。
-
-        以前 status() 只读状态文件，而状态文件里根本不存 rules
-        （rules 在场景 config.json）→ 三方打架：
-            config.json 5 条 / GET /rules 5 条 / GET /status 0 条
-        用户点完"添加规则"看到列表还是空的，就会以为没保存、反复添加同一条。
-        """
-        try:
-            self.scene.reload_if_changed()
-        except Exception:
-            pass
-        return merge_watch(self.scene.watch_cfg(), self.state.read().get("watch") or {})
-
-    def status(self):
-        current = self.state.read()
-        watch_cfg = self.effective_watch()
-        autosend_alive = self._autosend_thread is not None and self._autosend_thread.is_alive()
-        data = {
-            "ok": True,
-            "scene": self.scene.name,
-            "mode": self.mode,
-            "control": current.get("state"),
-            "control_since": current.get("since"),
-            "watch": watch_cfg,
-            "bauds": BAUD_CHOICES,
-            # watch_running 表示"后台自动循环是否在跑"：
-            # 监视模式占口、或定时发送已开启，都算在跑（UI 用它显示状态）。
-            "watch_running": self.loop.running or (autosend_alive and bool(watch_cfg.get("send_enabled"))),
-            "port_held": self.loop.running,
-            "sent_count": self.autosend_stats.get("sent", 0),
-            "autosend_error": self.autosend_stats.get("last_error", ""),
-            "watch_error": self.loop.last_error,
-            "alerts": self.state.read_alerts(5),
-            "port": current.get("port") or "",
-            "baud": current.get("baud") or int(self.effective_cfg().get("baud") or 0),
-            "hold_released_reason": self.ports.hold_released_reason,
-            "state_path": self.state.path,
-        }
-        try:
-            resolved = self.current_device()
-            data["resolved"] = resolved
-            data["port"] = resolved["device"]
-            # 传输方式描述：网页侧边栏据此显示"串口 COM10 @115200"
-            data["transport"] = transport_describe(
-                self.effective_cfg(), resolved["device"], resolved.get("baud"))
-        except BridgeError as exc:
-            data["resolved"] = None
-            data["resolve_error"] = exc.to_dict()
-            data["transport"] = transport_describe(self.effective_cfg())
-        data["port_owner"] = self.ports.owner()
-        return data
-
-    def poll(self, force=False):
-        """把后端攒下的数据交给网页。
-
-        自动发送（定时发送 / 规则自动处置）的每一帧都会进 `auto_frames`，
-        这里**不分 mode** 都取走——否则 light 模式下定时发送在页面上看不到回显
-        （Bug 4：用户说"没看到"，不是"没发送"）。
-
-        管家在跑时改从管家取（游标式增量），网页就完全不用碰串口了。
-        """
-        url = self._daemon_url()
-        if url:
-            from . import daemon as daemon_mod
-            # 第一次接上管家时用 -1：只收从现在起的新数据，不倒历史
-            cursor = getattr(self, "_daemon_cursor", -1)
-            cursor = -1 if cursor is None else int(cursor)
-            proxied = daemon_mod.request(url, "/poll?cursor=%d" % cursor, timeout=2.0)
-            if proxied and proxied.get("ok"):
-                self._daemon_cursor = int(proxied.get("cursor") or cursor)
-                if proxied.get("bytes"):
-                    return {
-                        "ok": True,
-                        "frames": [],
-                        "rx_text": proxied.get("rx_text") or "",
-                        "rx_hex": proxied.get("rx_hex") or "",
-                        "bytes": int(proxied.get("bytes") or 0),
-                        "via": "daemon",
-                    }
-                return {"ok": True, "frames": [], "rx_text": "", "rx_hex": "",
-                        "bytes": 0, "via": "daemon"}
-            self._daemon_cache = (0, None)      # 管家掉线：回退到本地逻辑
-
-        frames = self.loop.take_frames()
-        data = self.loop.take()
-        if frames or data:
-            return {
-                "ok": True,
-                "frames": frames,
-                "rx_text": data.decode("utf-8", errors="replace"),
-                "rx_hex": " ".join("%02X" % b for b in data),
-                "bytes": len(data),
-            }
-        # 轻模式**默认完全不碰串口**。
-        # 早先这里每 700ms 临时开口读一次（每次最多等 1500ms 首字节），
-        # 结果网页开着的时候串口几乎一直被占着——外部程序和 AI 都打不开（Bug 5）。
-        # 现在只有用户手动点「读一次」(force) 才真正开口。
-        if not force:
-            return {"ok": True, "rx_text": "", "rx_hex": "", "bytes": 0,
-                    "skipped": "轻模式不主动读串口（点「读一次」可临时读一帧）"}
-        try:
-            resolved = self.current_device()
-            with self.loop.port_lock:
-                out = serial_io.drain(self.effective_cfg(), resolved["device"])
-        except BridgeError as exc:
-            return {"ok": False, "error": exc.to_dict()}
-        if out["rx_text"]:
-            self.logger.append("RX", out["rx_text"])
-        return {
-            "ok": True,
-            "rx_text": out["rx_text"],
-            "rx_hex": out["rx_hex"],
-            "bytes": out["bytes"],
-        }
-
-    def alerts(self, limit):
-        return self.state.read_alerts(limit)
-
-    def clear_alerts(self):
-        return {"ok": True, "cleared": self.state.clear_alerts()}
-
-    # ── AI ⇄ AI 通道 ────────────────────────────────────────────────────────
-    # 网页只做"窗口 + 发送口"，判定（有没有证据、能不能复验）全在 channel.py。
-    def channel_list(self, since=0, limit=100):
-        return dict({"ok": True}, **self.chan.list(since, limit))
-
-    def channel_send(self, body):
-        return {"ok": True, "message": self.chan.append(body)}
-
-    def channel_verify(self, seq, actor="human"):
-        """把某条消息的证据重跑一遍，并把**复验结果本身**作为一条新消息贴回通道。
-
-        这一步是整个通道存在的理由：
-        如果复验比信任更麻烦，人就会选择信任，那"声明/证据分离"就白设计了。
-        """
-        msg = self.chan.get(seq)
-        result = run_evidence((msg.get("evidence") or {}).get("cmd") or "")
-        stored = self.chan.append({
-            "from": actor or "human",
-            "type": "verify_res",
-            "claim": "复验 #%s：%s" % (msg.get("seq"), "通过" if result["ok"] else "失败"),
-            "evidence": {
-                "cmd": result["cmd"],
-                "stdout": result["stdout"] or result["stderr"],
-                "exit": result["exit"],
-            },
-            "reply_to": msg.get("seq"),
-        })
-        return {"ok": True, "result": result, "message": stored}
-
-    # ── 动作 ────────────────────────────────────────────────────────────────
-    def send(self, text, mode="text", actor="human", source="web"):
-        """发一条命令。
-
-        source 表示"谁发的"：web(页面按钮) / ai(插件 serial_send 转发过来)。
-        AI 发起的会在 auto_frames 里记一帧，网页回显区就能看到（Bug 8）。
-
-        管家在跑时**交给管家发**：它已经常驻持有连接，网页就不该再去开关口
-        ——否则用户在网页上点一下，AI 的速度就从 0ms 掉回 1 秒（第 4 件核心目标）。
-        """
-        command = str(text or "").strip()
-        if not command:
-            raise BridgeError("config", "命令不能为空")
-        if actor == "ai":
-            allowed, current = self.state.check_ai_allowed()
-            if not allowed:
-                raise BridgeError(
-                    "control_blocked",
-                    "控制权是 %s，AI 不能发命令。" % current.get("state"),
-                    hint=["点网页上的[交给AI]（或 [继续AI]）",
-                          "也可以让 AI 调 serial_control action=ai",
-                          "人类发任意命令会自动把控制权拉回 human"],
-                )
-        else:
-            # 安全规则 1：人类命令永远优先，AI 托管立即让位
-            self.state.note_human_command()
-
-        proxied = self._proxy_send_to_daemon(command, mode, actor, source)
-        if proxied is not None:
-            return proxied
-
-        if mode == "hex":
-            payload_bytes = _parse_hex(command)
-            if payload_bytes is None:
-                raise BridgeError("config", "十六进制格式不对，示例：AA 55 01 00")
-        else:
-            payload_bytes = command.encode("utf-8")
-
-        if self.mode == "watch" and self.loop.running and self.loop.ser is not None:
-            if mode == "hex":
-                # 原始字节模式不补换行，帧由调用方给全（见 io.transact 的说明）
-                self.loop.ser.write(payload_bytes)
-            else:
-                self.loop.ser.write(payload_bytes + serial_io.decode_newline(
-                    self.effective_cfg().get("newline"), "\\r\\n"))
-            self.logger.append("TX", command)
-            # 标记"接下来这一小段回显是手动触发的"，读线程据此把来源标成 manual
-            self._manual_until = time.time() + 2.0
-            if source != "web":
-                self.loop._push_frame(command, "", "", 0, source)
-            return {"ok": True, "accepted": True, "mode": self.mode}
-
-        resolved = self.current_device()
-        cfg = self.effective_cfg()
-        # Bug 11：hex 模式必须把解析出来的原始字节传下去，
-        # 否则 transact 会把 "AA 55" 当成 5 个 ASCII 字符发出去。
-        with self.loop.port_lock:
-            result = serial_io.transact(
-                cfg, resolved["device"], command,
-                raw_bytes=payload_bytes if mode == "hex" else None)
-        self.logger.append("TX", command)
-        if result["rx_text"]:
-            self.logger.append("RX", result["rx_text"])
-        self.state.update(port=resolved["device"], baud=int(cfg.get("baud") or 0))
-
-        # 同步发送却一个字节都没收到 → 这是故障，不是"成功但回显为空"。
-        # 理由同 cli._require_reply：空的成功结果最容易被当成"命令执行了"。
-        #
-        # ⚠️ 但抛出之前必须先让规则知道"这次没回"：
-        # `no_response` 判据靠连续计数触发（失联告警是最常用的规则类型）。
-        # 如果直接抛，判定根本跑不到，这条规则就等于**完全失效**（用户实测报过）。
-        if result["empty"]:
-            self.loop.no_response_streak += 1
-            self._maybe_check("", "manual")
-            raise serial_io.describe_no_response(resolved, cfg)
-
-        self.loop.no_response_streak = 0
-        # Bug 7：手动发的回显也要跑判定，否则"设备回了 FAULT 但 alerts 是空的"
-        self._maybe_check(result["rx_text"], "manual", result.get("rx_bytes"))
-        # AI 发起的命令记一帧，网页才看得到（Bug 8）
-        if source != "web":
-            self.loop._push_frame(command, result["rx_text"], result["rx_hex"],
-                                  result["bytes"], source)
-        return {
-            "ok": True,
-            "accepted": True,
-            "mode": self.mode,
-            "rx_text": result["rx_text"],
-            "rx_hex": result["rx_hex"],
-            "bytes": result["bytes"],
-            "elapsed_ms": result["elapsed_ms"],
-            "note": resolved["note"],
-        }
-
-    def _maybe_check(self, text, source, raw_bytes=None):
-        """判定入口。**开关判断不在这里**——交给 RuleChecker 统一做。
-
-        以前这里也抄了一份"读状态文件的 check_enabled/check_source"，
-        结果和 RuleChecker 的分支不完全一样：配置里写 check_source="both" 时，
-        这里按状态文件的空值判成 watch_only，手动命令永远不判定。
-        两份开关逻辑必然走偏，只留一份。
-        """
-        try:
-            self.loop._run_checks(text, source, raw_bytes)
-        except Exception:
-            pass
-
-    def control(self, action, actor="human"):
-        # 按"动作 + 源状态"校验：resume 的目标也是 ai，不能只看目标状态
-        mapping = {
-            "ai": (STATE_AI, "交给AI", {STATE_HUMAN, STATE_PAUSED}),
-            "pause": (STATE_PAUSED, "暂停AI", {STATE_AI}),
-            "resume": (STATE_AI, "继续AI", {STATE_PAUSED}),
-            "human": (STATE_HUMAN, "人类接管", {STATE_AI, STATE_PAUSED}),
-        }
-        if action not in mapping:
-            raise BridgeError("config", "未知的控制动作：%r" % action)
-        target, label, sources = mapping[action]
-        # AI 不能在人看着网页时自己把控制权抢回去
-        # "自授权"= 调用方是 AI 且当前没人在看网页；这一步必须留痕（见 cli.cmd_control）
-        actor_id = str(actor or "human").lower()
-        self_granted = bool(
-            target == STATE_AI and actor_id == "ai" and not self.state.presence_alive()
-        )
-        if target == STATE_AI:
-            self.state.assert_self_grant_allowed(actor)
-        # 状态文件里的 changed_by 要记"谁真正点的"，不能一律写 web：
-        # 否则 AI 自己接管和人类点按钮在审计里长得一模一样。
-        changed_by = "ai" if actor_id == "ai" else "web"
-        audit = " ".join([
-            "⚠ 你现在是以 AI 身份自授权：当前无人在看网页，控制权由 AI 自己取得，"
-            "已记入状态文件 changed_by=ai（可审计）。" if self_granted else ""
-        ]).strip()
-        current_state = self.state.read().get("state")
-        # 幂等：已经是目标状态就当作成功，不要报 400。
-        # （早期版本把 human->human 当成非法迁移，导致"已经在人类手中"时
-        #  再点[人类接管]会报错，同一个按钮有时好有时坏，非常迷惑。）
-        if current_state == target:
-            return {
-                "ok": True,
-                "control": current_state,
-                "state": self.state.read(),
-                "port_action": "unchanged",
-                "watch_running": self.loop.running,
-                "self_granted": self_granted,
-                "note": " ".join(["已经是%s，无需切换" % label, audit]).strip(),
-            }
-        if current_state not in sources:
-            raise BridgeError(
-                "control_blocked",
-                "当前是 %s，不能执行[%s]。" % (current_state, label),
-                hint=["human 只能[交给AI]；ai 只能[暂停AI]/[人类接管]；"
-                      "paused 可以[交给AI]/[继续AI]/[人类接管]"],
-            )
-        try:
-            current = self.state.set_state(target, changed_by, label)
-        except ValueError as exc:
-            raise BridgeError("control_blocked", "状态迁移被拒绝（%s）。" % exc)
-
-        # 控制权一变，串口占用跟着变。走统一的收敛点，
-        # 和看门狗、CLI、serial_control 工具用的是同一段逻辑。
-        forced = self.ports.reconcile("web-control") or {}
-        port_action = forced.get("action", "unchanged")
-
-        result = {
-            "ok": True,
-            "control": current.get("state"),
-            "state": current,
-            "port_action": port_action,
-            "watch_running": self.loop.running,
-            "self_granted": self_granted,
-        }
-        if audit:
-            result["note"] = audit
-        return result
-
-    def set_watch(self, body):
-        current = self.state.read()
-        merged = dict(current.get("watch") or {})
-        allowed_keys = {
-            "send_enabled", "check_enabled", "check_source", "command",
-            "interval_ms", "timeout_ms", "command_mode",
-        }
-        for key, value in (body or {}).items():
-            if key not in allowed_keys:
-                continue
-            # 没传 / 空值 = "这次不改这一项"。直接写成空串会出事：
-            # check_source="" 会被 RuleChecker 回落成 watch_only，
-            # 于是判定被静默关掉，界面上还看不出来（真实踩过）。
-            if value in (None, "", [], {}):
-                continue
-            if key == "check_source":
-                normalized = normalize_check_source(value)
-                if normalized not in CHECK_SOURCES:
-                    raise BridgeError(
-                        "config", "check_source 只能是 watch_only / manual_only / both",
-                        hint=["watch_only=只判定时轮询；manual_only=只判手动命令；both=都判",
-                              "（历史写法 all 等同于 both）"])
-                merged[key] = normalized
-                continue
-            merged[key] = value
-        self.state.update(watch=merged)
-        return {"ok": True, "watch": merged}
-
-    # ── 规则编辑（写回场景 config.json）─────────────────────────────────────
-    def get_rules(self):
-        scene = load_scene(self.paths["common_config"], self.paths["protocol_root"],
-                           self.scene_name)
-        watch = scene.watch_cfg()
-        return {
-            "ok": True,
-            "rules": watch.get("rules") or [],
-            "allowed_auto_commands": watch.get("allowed_auto_commands") or [],
-            "rule_types": list(RULE_TYPES),
-            "config_path": os.path.join(scene.dir, "config.json"),
-        }
-
-    def set_rules(self, body):
-        """整体替换规则的列表。
-
-        只动场景 config.json 里的 watch.rules / allowed_auto_commands，
-        其它字段原样保留（包括用户手写的注释性键）。
-        """
-        rules = (body or {}).get("rules")
-        if rules is None:
-            raise BridgeError("config", "缺少 rules 字段",
-                              hint=['请求体示例：{"rules": [{"name":"...","when":{...},"then":{...}}]}'])
-        if not isinstance(rules, list):
-            raise BridgeError("config", "rules 必须是数组")
-
-        cleaned = []
-        for index, rule in enumerate(rules, 1):
-            if not isinstance(rule, dict):
-                raise BridgeError("config", "第 %d 条规则不是对象" % index)
-            name = str(rule.get("name") or "").strip()
-            if not name:
-                raise BridgeError("config", "第 %d 条规则缺少 name" % index)
-            when = rule.get("when") or {}
-            wtype = str(when.get("type") or "").strip()
-            if wtype not in RULE_TYPES:
-                raise BridgeError(
-                    "config",
-                    "规则「%s」的判据类型 %r 不支持。" % (name, wtype),
-                    hint=["只能是：" + " / ".join(RULE_TYPES)])
-            entry = {"name": name, "when": dict(when)}
-            if wtype in ("contains", "equals") and not str(when.get("value") or ""):
-                raise BridgeError("config", "规则「%s」的 %s 需要 value" % (name, wtype))
-            if wtype in ("regex", "hex_regex") and not str(when.get("pattern") or when.get("value") or ""):
-                raise BridgeError("config", "规则「%s」的 %s 需要 pattern" % (name, wtype))
-            if wtype == "hex" and not str(when.get("value") or ""):
-                raise BridgeError("config", "规则「%s」的 hex 需要 value，例如 \"AA 55 FF\"" % name)
-            if wtype == "regex":
-                # 写进配置前先编译一次，别把坏正则存盘
-                try:
-                    import re as _re
-                    _re.compile(str(when.get("pattern") or when.get("value")))
-                except Exception as exc:
-                    raise BridgeError("config", "规则「%s」的正则不合法：%s" % (name, exc))
-            if wtype == "hex_regex":
-                # 字节正则的边界：只能匹配 0-255 的字节，所以模式必须能编码成 latin-1
-                pattern = str(when.get("pattern") or when.get("value"))
-                try:
-                    import re as _re
-                    _re.compile(pattern.encode("latin-1"))
-                except UnicodeEncodeError:
-                    raise BridgeError(
-                        "config",
-                        "规则「%s」的字节正则只能包含 0-255 的字符（建议写成 \\xff）" % name)
-                except Exception as exc:
-                    raise BridgeError("config", "规则「%s」的正则不合法：%s" % (name, exc))
-            if wtype == "no_response":
-                try:
-                    entry["when"]["consecutive"] = max(1, int(when.get("consecutive") or 3))
-                except (TypeError, ValueError):
-                    raise BridgeError("config", "规则「%s」的 consecutive 必须是整数" % name)
-            then = rule.get("then") or {}
-            if then:
-                entry["then"] = dict(then)
-            if "notify" in rule:
-                entry["notify"] = bool(rule.get("notify"))
-            cleaned.append(entry)
-
-        allowed = (body or {}).get("allowed_auto_commands")
-        scene = load_scene(self.paths["common_config"], self.paths["protocol_root"],
-                           self.scene_name)
-        config_path = os.path.join(scene.dir, "config.json")
-
-        # 读原始文件（保留用户已有的其它键），只替换 watch 块里这两项
-        try:
-            with open(config_path, encoding="utf-8-sig") as handle:
-                raw = json.loads(handle.read() or "{}")
-        except FileNotFoundError:
-            raw = {}
-        except ValueError as exc:
-            raise BridgeError("config", "场景 config.json 不是合法 JSON，未写入。",
-                              detail=str(exc))
-        watch = dict(raw.get("watch") or {})
-        watch["rules"] = cleaned
-        if allowed is not None:
-            if not isinstance(allowed, list):
-                raise BridgeError("config", "allowed_auto_commands 必须是数组")
-            watch["allowed_auto_commands"] = [str(x).strip() for x in allowed if str(x).strip()]
-        raw["watch"] = watch
-
-        tmp = config_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(raw, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-        os.replace(tmp, config_path)
-
-        # 场景对象缓存的是启动时的配置，改完必须**原地**重读：
-        # WatchLoop / RuleChecker 持有的是同一个 Scene 对象，
-        # `self.scene = load_scene(...)` 只换掉了 WebServer 这一份，
-        # 判定线程还在用旧的规则 → 用户遇到的"改完规则要重启网页才生效"，
-        # 以及"告警里写的是上一个规则的名字"（旧规则的 then 也没有 send）。
-        self.scene.reload_if_changed(force=True)
-        return {
-            "ok": True,
-            "rules": cleaned,
-            "allowed_auto_commands": watch.get("allowed_auto_commands") or [],
-            "config_path": config_path,
-        }
-
-    def reconnect(self, com, baud):
-        if com:
-            self.override_com = com
-        if baud:
-            self.override_baud = int(baud)
-        # 真重建：watch 模式先停旧口再按新参数开
-        if self.mode == "watch":
-            resolved = self.current_device()
-            self.loop.start(resolved["device"], int(self.effective_cfg().get("baud") or 115200))
-        else:
-            # 轻模式**不占口**，所以这里绝不能真去 open 一下做"验证"。
-            # 两个理由（都是实测踩出来的）：
-            #   1) 打开会撞上真正持口的那个进程（管家/定时发送线程/用户的串口助手），
-            #      于是报"COM10 被其他程序占用"——但轻模式本来就不该占口，这是假警报；
-            #   2) CH340 在打开瞬间会拉高 DTR/RTS，等于给板子来了一次复位。
-            # 轻模式只需要确认"这个口现在存在"，扫描就够。
-            resolved = self.current_device()
-            self.state.update(port=resolved["device"],
-                              baud=int(self.effective_cfg().get("baud") or 0))
-        return {"ok": True, "port": self.current_device()["device"], "baud": self.effective_cfg().get("baud")}
-
-    def autodetect(self):
-        """AI 自动选择：先按配置解析，配不上时**真的去猜**。
-
-        以前它只做"解析"：配置写死 COM7、设备被 Windows 换成 COM10 时直接抛错，
-        把正确的候选列在错误信息里却不去选。按钮叫「AI 自动选择」，
-        用户期待的是"你帮我找找"——用户实测踩过（拔插 USB 换了口）。
-        """
-        cfg = self.scene.cfg
-        reasons = {
-            "match_serial": "按序列号 %r 精确匹配" % cfg.get("match_serial"),
-            "match_vid_pid": "按 VID:PID %s 精确匹配" % cfg.get("match_vid_pid"),
-            "match": "按描述关键字 %r 匹配" % cfg.get("match"),
-            "com": "配置里指定的串口号可用",
-            "only_port": "当前只有一个串口设备",
-            "only_usb_port": "当前只有一个真实 USB 串口（已排除蓝牙虚拟口）",
-        }
-        try:
-            resolved = resolve_port(cfg)
-        except BridgeError as exc:
-            # 只有"配置解析不出来"才去猜；端口被占用之类不能靠猜解决
-            if exc.kind not in ("no_device", "ambiguous_device", "config"):
-                raise
-            resolved = guess_port(cfg)
-            if resolved is None:
-                raise exc
-            story = {
-                "match_serial": "按序列号",
-                "match_vid_pid": "按 VID:PID",
-                "match": "按描述关键字",
-                "only_usb_port": "按「只有一块真实 USB 串口」",
-            }.get(resolved["source"], "按规则")
-            resolved["note"] = ("配置里的串口已经不可用，%s 重新找到了它；"
-                                "建议把 config.json 改成 match_vid_pid 或 match_serial，"
-                                "以后换 USB 口就不用管了" % story)
-        result = {
-            "ok": True,
-            "port": resolved["device"],
-            "description": resolved["description"],
-            "vid_pid": resolved["vid_pid"],
-            "reason": reasons.get(resolved["source"], resolved["source"]),
-            "note": resolved["note"],
-        }
-        # 序列号一并回传：两块同型号板子（都是 CH340）时，这是唯一能分清的依据
-        for port in scan_ports():
-            if port["device"].lower() == resolved["device"].lower():
-                result["serial_number"] = port.get("serial_number") or ""
-                break
-        return result
-
-    def probe_port(self):
-        """显式探测一次"这个口有没有被别的程序占着"。
-
-        只有用户主动点「检测」才走这里：探测要真的 open 一次串口，
-        而 CH340 打开瞬间会拉 DTR/RTS —— 对接着复位电路的板子等于一次硬复位。
-        """
-        value = self.ports.owner(probe=True)
-        return dict({"ok": True}, **value)
-
-    def set_mode(self, mode):
-        if mode not in ("light", "watch"):
-            raise BridgeError("config", "模式只能是 light 或 watch")
-        if mode == self.mode:
-            return {"ok": True, "mode": self.mode}
-
-        # 管家在跑：监视模式交给它，网页仍然不拿口（否则两边抢口）
-        daemon_url = self._daemon_url()
-        if daemon_url:
-            from . import daemon as daemon_mod
-            result = daemon_mod.request(daemon_url, "/mode", {"mode": mode}, timeout=2.0)
-            if result is None:
-                self._daemon_cache = (0, None)      # 管家没了：退回本地逻辑
-            elif not result.get("ok"):
-                err = result.get("error") or {}
-                raise BridgeError(err.get("kind") or "internal",
-                                  err.get("message") or "管家拒绝切换模式",
-                                  hint=err.get("hint"))
-            else:
-                self.mode = mode
-                self.loop.stop()                    # 网页不再持口
-                self.ports.hold_released_reason = "由管家持有（监视模式）"
-                return {"ok": True, "mode": self.mode, "watch_running": True,
-                        "via": "daemon"}
-
-        if mode == "watch":
-            # 切监视模式也遵守控制权：控制权不在 AI 就先不抢口
-            self.mode = "watch"
-            if self.ports.should_hold():
-                self.ports.acquire_if_needed()
-            else:
-                self.ports.hold_released_reason = "控制权不在 AI，监视模式暂不占口"
-        else:
-            self.loop.stop()
-            self.mode = "light"
-            self.ports.hold_released_reason = ""
-        return {"ok": True, "mode": self.mode, "watch_running": self.loop.running}
-
-    # ── 暂停（网页留着） vs 退出（网页也关）───────────────────────────────
-    def pause_port(self):
-        """暂停：释放串口，但网页继续可访问。想临时用串口助手时点这个。"""
-        if self.loop.running:
-            self.loop.stop()
-        self.ports.hold_released_reason = "已手动暂停，串口已释放"
-        return {"ok": True, "paused": True, "watch_running": self.loop.running,
-                "port_owner": self.ports.owner()}
-
-    def resume_port(self):
-        """从"暂停"恢复占用（只有控制权在 AI 且是 watch 模式才真的占口）。"""
-        self.ports.hold_released_reason = ""
-        acquired = False
-        if self.ports.should_hold():
-            acquired = self.ports.acquire_if_needed()
-        return {"ok": True, "paused": False, "acquired": acquired,
-                "watch_running": self.loop.running, "port_owner": self.ports.owner()}
-
-    def request_shutdown(self):
-        self.shutdown_event.set()
-        threading.Thread(target=self._shutdown_worker, name="shutdown", daemon=True).start()
 
     def _autosend_loop(self):
         """定时发送：独立于模式、独立于串口占用。
@@ -809,6 +205,7 @@ class WebServer(object):
                 self.autosend_stats["last_error"] = str(exc)
                 self.shutdown_event.wait(0.5)
 
+
     def _existing_instance(self):
         """检测同一场景是否已有网页实例在跑（避免两个进程抢串口）。"""
         try:
@@ -828,6 +225,7 @@ class WebServer(object):
             pass
         return ""
 
+
     def _write_instance(self, url):
         try:
             os.makedirs(os.path.dirname(self._instance_file), exist_ok=True)
@@ -837,11 +235,13 @@ class WebServer(object):
         except OSError:
             pass
 
+
     def _clear_instance(self):
         try:
             os.remove(self._instance_file)
         except OSError:
             pass
+
 
     def _heartbeat_loop(self):
         """每 2 秒声明一次"有人在看着这一局"，AI 的门禁据此切严格/宽松。"""
@@ -852,6 +252,7 @@ class WebServer(object):
                 pass
             self.shutdown_event.wait(2.0)
 
+
     def _shutdown_worker(self):
         time.sleep(0.15)  # 让 /shutdown 的响应先写完
         self.loop.stop()
@@ -860,6 +261,7 @@ class WebServer(object):
                 self.httpd.shutdown()
             except Exception:
                 pass
+
 
     # ── 服务生命周期 ────────────────────────────────────────────────────────
     def serve(self, open_browser=False):
@@ -961,21 +363,6 @@ def sys_flush():
         sys.stdout.flush()
     except Exception:
         pass
-
-
-def _parse_hex(text):
-    cleaned = str(text).replace(",", " ").replace("0x", " ").replace("0X", " ")
-    parts = [p for p in cleaned.split() if p]
-    out = bytearray()
-    for part in parts:
-        try:
-            value = int(part, 16)
-        except ValueError:
-            return None
-        if value < 0 or value > 255:
-            return None
-        out.append(value)
-    return bytes(out) if out else None
 
 
 def _load_page():
