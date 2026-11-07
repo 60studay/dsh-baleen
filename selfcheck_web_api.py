@@ -415,7 +415,21 @@ def run_checks(base, original):
     check("POST /watch  check_source 非法值被拒",
           data is not None and data.get("ok") is not True, str(data)[:120])
 
-    # 20. 未知 POST 应该 404
+    # 19c. /port/probe 与 /alerts/clear（后者是"清空也要清告警"那条需求的后端）
+    status, text = http_post(base, "/port/probe", {})
+    data = as_json(text)
+    check("POST /port/probe  返回 200", status == 200, "status=%s" % status)
+    check("POST /port/probe  给出 owner",
+          data is not None and data.get("owner") in ("free", "other", "ours", "unknown"),
+          str(data)[:120])
+
+    status, text = http_post(base, "/alerts/clear", {})
+    data = as_json(text)
+    check("POST /alerts/clear  返回 200", status == 200, "status=%s" % status)
+    check("POST /alerts/clear  有 cleared 字段",
+          data is not None and isinstance(data.get("cleared"), int), str(data)[:120])
+
+    # 23. 未知 POST 应该 404
     status, text = http_post(base, "/this-post-does-not-exist", {})
     data = as_json(text)
     check("POST 未知路径  返回 404", status == 404, "status=%s" % status)

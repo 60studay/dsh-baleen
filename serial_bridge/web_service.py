@@ -121,10 +121,22 @@ def pick_port(preferred=0):
 
 
 # ── 动作 ────────────────────────────────────────────────────────────────────
-def open_web(paths, scene, port=0, mode="light", open_browser=False, wait_s=12.0):
+def _open_browser(url):
+    """把 URL 丢给系统浏览器。失败不影响服务本身（只是用户需要自己点链接）。"""
+    try:
+        import webbrowser
+        return webbrowser.open(str(url))
+    except Exception:
+        return False
+
+
+def open_web(paths, scene, port=0, mode="light", open_browser=True, wait_s=12.0):
     """起一个后台网页实例并返回它的 URL。已经在跑就直接返回现有的。"""
     existing = read_instance(paths, scene)
     if existing:
+        # 已经在跑：如果用户要"看看它"，就把现有页面的浏览器打开，而不是再起一个
+        if open_browser and existing.get("url"):
+            _open_browser(existing["url"])
         return {
             "running": True,
             "already_running": True,

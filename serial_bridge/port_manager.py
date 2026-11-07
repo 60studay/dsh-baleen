@@ -115,26 +115,40 @@ class PortManager(object):
             self.shutdown_event.wait(1.0)
 
     # ── 谁占着 ──────────────────────────────────────────────────────────────
-    def owner(self):
-        """谁占着这个口：ours / other / free。用于网页状态栏。
+    def owner(self, probe=False):
+        """谁占着这个口：ours / other / free / unknown。用于网页状态栏。
 
-        探测本身要临时开一次口，所以缓存 5 秒：网页每 700ms 拉一次 /status，
-        不缓存就变成"状态栏自己在占口"。
+        **默认不探测**（probe=False）：
+        判断"空闲还是被占"唯一的办法是真的 open 一次，而打开 CH340 会拉一下
+        DTR/RTS —— 很多板子这两个脚接的是复位电路，等于**每 5 秒给板子一次硬复位**；
+        而且探测那 50~200ms 会挡住串口助手，跨进程时还会和管家/CLI 自己撞。
+
+        所以：只有本网页真的持着口才是 ours，其它一律 unknown；
+        要真答案得显式调 probe=True（网页「检测占用」按钮 = POST /port/probe）。
         """
         now = time.time()
-        cached = self._port_owner_cache.get("value")
-        if cached is not None and (now - self._port_owner_cache.get("at", 0)) < 5.0:
-            return cached
         device = ""
         try:
             device = self.current_device()["device"]
         except BridgeError:
-            value = {"owner": "unknown", "device": "", "detail": "串口未解析出来"}
-            self._port_owner_cache = {"at": now, "value": value}
-            return value
+            device = ""
+
         if self.loop.running and getattr(self.loop, "ser", None) is not None:
-            value = {"owner": "ours", "device": device,
-                     "detail": "本网页的监视模式正持有 %s" % device}
+            return {"owner": "ours", "device": device,
+                    "detail": "本网页的监视模式正持有 %s" % device}
+
+        if not probe:
+            if not device:
+                return {"owner": "unknown", "device": "", "detail": "串口未解析出来"}
+            return {"owner": "unknown", "device": device,
+                    "detail": "轻模式不碰串口（探测会拉 DTR/RTS，可能复位板子）；"
+                              "点「检测占用」可以主动试一次"}
+
+        cached = self._port_owner_cache.get("value")
+        if cached is not None and (now - self._port_owner_cache.get("at", 0)) < 5.0:
+            return cached
+        if not device:
+            value = {"owner": "unknown", "device": "", "detail": "串口未解析出来"}
             self._port_owner_cache = {"at": now, "value": value}
             return value
         try:

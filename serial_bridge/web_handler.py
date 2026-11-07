@@ -136,6 +136,10 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     body.get("seq"), str(body.get("actor") or "human")))
             if path == "/port/pause":
                 return self._json(self.ctx["pause_port"]())
+            if path == "/port/probe":
+                return self._json(self.ctx["probe_port"]())
+            if path == "/alerts/clear":
+                return self._json(self.ctx["clear_alerts"]())
             if path == "/port/resume":
                 return self._json(self.ctx["resume_port"]())
             if path == "/reconnect":

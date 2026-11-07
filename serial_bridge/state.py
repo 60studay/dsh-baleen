@@ -285,6 +285,24 @@ class SharedState(object):
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
         return record
 
+    def clear_alerts(self):
+        """清空告警记录，返回清掉了多少条。
+
+        为什么要有这个：测试时规则一直触发，告警条关了又弹、关了又弹；
+        用户要的是一个"从这儿开始重新算"的动作（见通讯板 14:35 需求 3）。
+        """
+        try:
+            with open(self.alerts_path, encoding="utf-8") as handle:
+                count = sum(1 for line in handle if line.strip())
+        except OSError:
+            return 0
+        try:
+            with open(self.alerts_path, "w", encoding="utf-8"):
+                pass
+        except OSError:
+            return 0
+        return count
+
     def read_alerts(self, limit=20):
         try:
             with open(self.alerts_path, encoding="utf-8") as handle:

@@ -267,6 +267,9 @@ class WebServer(object):
     def alerts(self, limit):
         return self.state.read_alerts(limit)
 
+    def clear_alerts(self):
+        return {"ok": True, "cleared": self.state.clear_alerts()}
+
     # ── AI ⇄ AI 通道 ────────────────────────────────────────────────────────
     # 网页只做"窗口 + 发送口"，判定（有没有证据、能不能复验）全在 channel.py。
     def channel_list(self, since=0, limit=100):
@@ -689,6 +692,15 @@ class WebServer(object):
                 break
         return result
 
+    def probe_port(self):
+        """显式探测一次"这个口有没有被别的程序占着"。
+
+        只有用户主动点「检测」才走这里：探测要真的 open 一次串口，
+        而 CH340 打开瞬间会拉 DTR/RTS —— 对接着复位电路的板子等于一次硬复位。
+        """
+        value = self.ports.owner(probe=True)
+        return dict({"ok": True}, **value)
+
     def set_mode(self, mode):
         if mode not in ("light", "watch"):
             raise BridgeError("config", "模式只能是 light 或 watch")
@@ -896,6 +908,8 @@ class WebServer(object):
             "set_rules": self.set_rules,
             "get_rules": self.get_rules,
             "pause_port": self.pause_port,
+            "probe_port": self.probe_port,
+            "clear_alerts": self.clear_alerts,
             "resume_port": self.resume_port,
             "reconnect": self.reconnect,
             "autodetect": self.autodetect,

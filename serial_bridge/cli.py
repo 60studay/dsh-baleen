@@ -489,11 +489,13 @@ def cmd_webctl(paths, args):
     scene = (args.scene or "").strip() or _default_scene(paths)
     action = args.action
     if action == "open":
+        # 默认就把浏览器打开：否则用户/AI 只看到一个 URL，不知道网页其实已经在跑了。
+        # 不想要请显式 --no-browser。
         return _ok(web_service.open_web(
             paths, scene,
             port=int(args.port or 0),
             mode=args.mode,
-            open_browser=bool(getattr(args, "open_browser", False))))
+            open_browser=bool(getattr(args, "open_browser", True))))
     if action == "close":
         return _ok(web_service.close_web(paths, scene))
     return _ok(web_service.status_web(paths, scene))
@@ -653,7 +655,10 @@ def build_parser():
     webctl.add_argument("--scene", default="", help="留空 = 唯一的场景")
     webctl.add_argument("--port", type=int, default=0, help="0 = 自动挑（8898 起）")
     webctl.add_argument("--mode", default="light", choices=["light", "watch"])
-    webctl.add_argument("--open-browser", action="store_true")
+    webctl.add_argument("--open-browser", dest="open_browser", action="store_true",
+                        default=True, help="开了网页就顺便打开浏览器（默认就是开）")
+    webctl.add_argument("--no-browser", dest="open_browser", action="store_false",
+                        help="只起服务、不弹浏览器（CI / 远程用）")
 
     return parser
 

@@ -197,13 +197,18 @@
     $('modePill').textContent = data.mode === 'watch' ? '监视模式（占口）' : '轻模式（不占口）';
     document.querySelector('input[name=wmode][value=' + (data.mode || 'light') + ']').checked = true;
 
-    // 谁占着这个口
+    // 谁占着这个口。
+    // 轻模式下后端**不探测**（打开 CH340 会拉 DTR/RTS，可能给板子来一次复位），
+    // 只显示"状态未知"；想知道真答案就点这个胶囊，走 /port/probe 主动试一次。
     var owner = data.port_owner || {};
     var oe = $('portOwner');
     var OWNER_LABEL = { ours: '被本网页占用', other: '被其他程序占用', free: '可用', unknown: '状态未知' };
-    oe.dataset.owner = owner.owner || 'unknown';
-    oe.textContent = OWNER_LABEL[owner.owner] || '—';
-    oe.title = owner.detail || '';
+    var shown = owner;
+    if (probeResult && (Date.now() - probeResult.at) < 8000) shown = probeResult;
+    oe.dataset.owner = shown.owner || 'unknown';
+    oe.textContent = OWNER_LABEL[shown.owner] || '—';
+    oe.title = (shown.detail || '') + '（点一下检测占用）';
+    oe.style.cursor = 'pointer';
 
     // 暂停/恢复按钮
     var running = !!data.watch_running;
@@ -512,6 +517,22 @@
         })
         .catch(function () { restore(); });
     }).catch(function (e) { fail({ message: '请求失败：' + (e && e.message || e) }); });
+  });
+
+  /* ── 显式探测串口占用（只有点了才真的 open 一次）────── */
+  // 轻模式默认不碰串口，所以状态栏只能显示"状态未知"。
+  // 用户想知道"是不是被串口助手占了"，点一下这里，后端才真去开一次。
+  var probeResult = null;
+
+  $('portOwner').addEventListener('click', function () {
+    post('/port/probe', {}).then(function (data) {
+      if (!data.ok) { pushEvent('bad', '检测占用失败：' + errLine(data.error)); return; }
+      probeResult = { at: Date.now(), owner: data.owner, detail: data.detail };
+      var label = { ours: '被本网页占用', other: '被其他程序占用',
+                    free: '可用', unknown: '状态未知' }[data.owner] || data.owner;
+      pushEvent('', '检测占用：' + label + (data.detail ? '（' + data.detail + '）' : ''));
+      tick();
+    });
   });
 
   ['portSelect', 'baudSelect'].forEach(function (id) {
