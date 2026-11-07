@@ -72,6 +72,9 @@
   .tag.ai   { background: rgba(47,129,247,.22); color: var(--ai);    border: 1px solid var(--ai); }
   .tag.human{ background: rgba(63,185,80,.22);  color: var(--human); border: 1px solid var(--human); }
   .tag.auto { background: rgba(210,153,34,.22); color: var(--paused);border: 1px solid var(--paused); }
+  /* 「规则」用红色：规则自动发命令 = 用户没直接操作、系统自己动手，
+     是最需要被看见的一类。以前它和「定时」共用黄色，等于把自主行为藏起来了。 */
+  .tag.rule { background: rgba(220,53,69,.22); color: #ff7b7b;    border: 1px solid #a83232; }
   .tag.dev  { background: rgba(138,138,138,.18);color: var(--muted); border: 1px solid var(--line); }
   /* 命令文字给点颜色，和回显区分开——区分靠颜色和徽章，不靠 ">>" 前缀 */
   .tx { color: #9cdcfe; }
@@ -471,6 +474,8 @@
           <option value="equals">等于</option>
           <option value="regex">正则</option>
           <option value="no_response">无响应</option>
+          <option value="hex">字节（hex）</option>
+          <option value="hex_regex">字节正则</option>
         </select>
         <input type="text" id="rValue" placeholder="匹配内容" style="flex:1">
       </div>
@@ -586,7 +591,9 @@
     web: ['human', '我'],
     manual: ['human', '我'],
     auto: ['auto', '定时'],
+    timer: ['auto', '定时'],
     watch: ['auto', '定时'],
+    rule: ['rule', '规则'],
     dev: ['dev', '设备']
   };
 
@@ -1047,7 +1054,10 @@
   var allowCache = [];
   var editingIndex = -1;
 
-  var TYPE_LABEL = { contains: '包含', equals: '等于', regex: '正则', no_response: '无响应' };
+  var TYPE_LABEL = {
+    contains: '包含', equals: '等于', regex: '正则', no_response: '无响应',
+    hex: '字节', hex_regex: '字节正则'
+  };
 
   function describeRule(r) {
     var when = r.when || {};
@@ -1165,7 +1175,7 @@
     var when = { type: type };
     if (type === 'no_response') {
       when.consecutive = parseInt(value, 10) || 3;
-    } else if (type === 'regex') {
+    } else if (type === 'regex' || type === 'hex_regex') {
       when.pattern = value;
     } else {
       when.value = value;

@@ -66,7 +66,7 @@ SKIP_FILES = {
 # ⚠️ 往这里加新条目 = 承认你在欠债。加之前先问：能不能现在拆？
 KNOWN_OVERSIZE = {
     "web/index.html": {
-        "lines": 1417,
+        "lines": 1427,
         # 2026-11-07 +70：收发区从 <textarea> 换成富文本容器，
         # 才能给"谁发的"上色（textarea 是纯文本控件，做不到分色）。
         # 2026-11-07 +16：实现方接手重做——两列网格（左徽章/右内容），
@@ -88,7 +88,7 @@ KNOWN_OVERSIZE = {
                   "render 与 execute 各加一段（测试方要求 AI 自授权必须在返回里明说）",
     },
     "serial_bridge/supervisor.py": {
-        "lines": 897,
+        "lines": 947,
         "reason": "已从 1262 拆过一轮（第 4.5 件），仍偏大；"
                   "计划在结构体检 R1（多轨做完）再拆。"
                   "2026-11-07 +3：control() 增加 actor 参数与自授权门禁调用"
@@ -97,7 +97,9 @@ KNOWN_OVERSIZE = {
                   "changed_by 区分 ai/web（此前 AI 接管和人类点按钮在审计里长得一样）。"
                   "2026-11-07 +5：send() 无回显时抛 no_response（与 cli 同一语义）。"
                   "2026-11-07 +36：AI⇄AI 通道的三个方法（list/send/verify）"
-                  "——注意它们只是转发，判定逻辑在 channel.py，别往这里搬",
+                  "——注意它们只是转发，判定逻辑在 channel.py，别往这里搬。"
+                  "2026-11-07 +50：规则数据源统一（effective_watch）+ /watch 不写空值 + check_source 别名归一"
+                  "（/status 的 rules 永远是 0 条、check_source 被写成空串，两个真 bug）",
     },
 }
 

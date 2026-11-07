@@ -27,7 +27,7 @@ from .port_manager import PortManager
 from .rule_checker import RuleChecker
 from .watch_loop import WatchLoop
 from .web_handler import BridgeHandler
-from .rules import RULE_TYPES
+from .rules import RULE_TYPES, CHECK_SOURCES, merge_watch, normalize_check_source
 from .runner import RuleWorker
 from .state import SharedState, STATE_AI, STATE_HUMAN, STATE_PAUSED, VALID_STATES, _safe_name
 from .transport import describe_transport as transport_describe
@@ -148,9 +148,23 @@ class WebServer(object):
         }
 
     # ── 状态 ────────────────────────────────────────────────────────────────
+    def effective_watch(self):
+        """网页看到、判定用的 watch 配置：**配置打底、状态覆盖，空值不覆盖**。
+
+        以前 status() 只读状态文件，而状态文件里根本不存 rules
+        （rules 在场景 config.json）→ 三方打架：
+            config.json 5 条 / GET /rules 5 条 / GET /status 0 条
+        用户点完"添加规则"看到列表还是空的，就会以为没保存、反复添加同一条。
+        """
+        try:
+            self.scene.reload_if_changed()
+        except Exception:
+            pass
+        return merge_watch(self.scene.watch_cfg(), self.state.read().get("watch") or {})
+
     def status(self):
         current = self.state.read()
-        watch_cfg = current.get("watch") or {}
+        watch_cfg = self.effective_watch()
         autosend_alive = self._autosend_thread is not None and self._autosend_thread.is_alive()
         data = {
             "ok": True,
@@ -349,12 +363,18 @@ class WebServer(object):
 
         # 同步发送却一个字节都没收到 → 这是故障，不是"成功但回显为空"。
         # 理由同 cli._require_reply：空的成功结果最容易被当成"命令执行了"。
+        #
+        # ⚠️ 但抛出之前必须先让规则知道"这次没回"：
+        # `no_response` 判据靠连续计数触发（失联告警是最常用的规则类型）。
+        # 如果直接抛，判定根本跑不到，这条规则就等于**完全失效**（用户实测报过）。
         if result["empty"]:
+            self.loop.no_response_streak += 1
+            self._maybe_check("", "manual")
             raise serial_io.describe_no_response(resolved, cfg)
 
+        self.loop.no_response_streak = 0
         # Bug 7：手动发的回显也要跑判定，否则"设备回了 FAULT 但 alerts 是空的"
-        if not result["empty"]:
-            self._maybe_check(result["rx_text"], "manual")
+        self._maybe_check(result["rx_text"], "manual", result.get("rx_bytes"))
         # AI 发起的命令记一帧，网页才看得到（Bug 8）
         if source != "web":
             self.loop._push_frame(command, result["rx_text"], result["rx_hex"],
@@ -370,18 +390,16 @@ class WebServer(object):
             "note": resolved["note"],
         }
 
-    def _maybe_check(self, text, source):
-        """按 check_enabled / check_source 决定要不要判定。绝不抛异常。"""
+    def _maybe_check(self, text, source, raw_bytes=None):
+        """判定入口。**开关判断不在这里**——交给 RuleChecker 统一做。
+
+        以前这里也抄了一份"读状态文件的 check_enabled/check_source"，
+        结果和 RuleChecker 的分支不完全一样：配置里写 check_source="both" 时，
+        这里按状态文件的空值判成 watch_only，手动命令永远不判定。
+        两份开关逻辑必然走偏，只留一份。
+        """
         try:
-            watch = self.state.read().get("watch") or {}
-            if not watch.get("check_enabled"):
-                return
-            want = str(watch.get("check_source") or "watch_only")
-            if want == "watch_only" and source != "watch":
-                return
-            if want == "manual_only" and source != "manual":
-                return
-            self.loop._run_checks(text, source)
+            self.loop._run_checks(text, source, raw_bytes)
         except Exception:
             pass
 
@@ -462,8 +480,23 @@ class WebServer(object):
             "interval_ms", "timeout_ms", "command_mode",
         }
         for key, value in (body or {}).items():
-            if key in allowed_keys:
-                merged[key] = value
+            if key not in allowed_keys:
+                continue
+            # 没传 / 空值 = "这次不改这一项"。直接写成空串会出事：
+            # check_source="" 会被 RuleChecker 回落成 watch_only，
+            # 于是判定被静默关掉，界面上还看不出来（真实踩过）。
+            if value in (None, "", [], {}):
+                continue
+            if key == "check_source":
+                normalized = normalize_check_source(value)
+                if normalized not in CHECK_SOURCES:
+                    raise BridgeError(
+                        "config", "check_source 只能是 watch_only / manual_only / both",
+                        hint=["watch_only=只判定时轮询；manual_only=只判手动命令；both=都判",
+                              "（历史写法 all 等同于 both）"])
+                merged[key] = normalized
+                continue
+            merged[key] = value
         self.state.update(watch=merged)
         return {"ok": True, "watch": merged}
 
@@ -510,13 +543,27 @@ class WebServer(object):
             entry = {"name": name, "when": dict(when)}
             if wtype in ("contains", "equals") and not str(when.get("value") or ""):
                 raise BridgeError("config", "规则「%s」的 %s 需要 value" % (name, wtype))
-            if wtype == "regex" and not str(when.get("pattern") or when.get("value") or ""):
-                raise BridgeError("config", "规则「%s」的 regex 需要 pattern" % name)
+            if wtype in ("regex", "hex_regex") and not str(when.get("pattern") or when.get("value") or ""):
+                raise BridgeError("config", "规则「%s」的 %s 需要 pattern" % (name, wtype))
+            if wtype == "hex" and not str(when.get("value") or ""):
+                raise BridgeError("config", "规则「%s」的 hex 需要 value，例如 \"AA 55 FF\"" % name)
             if wtype == "regex":
                 # 写进配置前先编译一次，别把坏正则存盘
                 try:
                     import re as _re
                     _re.compile(str(when.get("pattern") or when.get("value")))
+                except Exception as exc:
+                    raise BridgeError("config", "规则「%s」的正则不合法：%s" % (name, exc))
+            if wtype == "hex_regex":
+                # 字节正则的边界：只能匹配 0-255 的字节，所以模式必须能编码成 latin-1
+                pattern = str(when.get("pattern") or when.get("value"))
+                try:
+                    import re as _re
+                    _re.compile(pattern.encode("latin-1"))
+                except UnicodeEncodeError:
+                    raise BridgeError(
+                        "config",
+                        "规则「%s」的字节正则只能包含 0-255 的字符（建议写成 \\xff）" % name)
                 except Exception as exc:
                     raise BridgeError("config", "规则「%s」的正则不合法：%s" % (name, exc))
             if wtype == "no_response":
@@ -559,9 +606,12 @@ class WebServer(object):
             handle.write("\n")
         os.replace(tmp, config_path)
 
-        # 场景对象缓存的是启动时的配置，改完要重新读一次
-        self.scene = load_scene(self.paths["common_config"], self.paths["protocol_root"],
-                                self.scene_name)
+        # 场景对象缓存的是启动时的配置，改完必须**原地**重读：
+        # WatchLoop / RuleChecker 持有的是同一个 Scene 对象，
+        # `self.scene = load_scene(...)` 只换掉了 WebServer 这一份，
+        # 判定线程还在用旧的规则 → 用户遇到的"改完规则要重启网页才生效"，
+        # 以及"告警里写的是上一个规则的名字"（旧规则的 then 也没有 send）。
+        self.scene.reload_if_changed(force=True)
         return {
             "ok": True,
             "rules": cleaned,

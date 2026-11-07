@@ -98,12 +98,17 @@ class RuleWorker(object):
             self._kill()
 
     # ── 判定 ────────────────────────────────────────────────────────────────
-    def evaluate(self, text, watch_cfg, streak=0, source="watch"):
-        """返回 (results, error)。results 是 RuleResult.to_dict() 列表。"""
+    def evaluate(self, text, watch_cfg, streak=0, source="watch", raw_bytes=None):
+        """返回 (results, error)。results 是 RuleResult.to_dict() 列表。
+
+        raw_bytes 用 hex 字符串过 IPC（JSON 传不了二进制），子进程再还原成 bytes。
+        丢了原始字节，hex / hex_regex 判据就不可能命中。
+        """
         request = {
             "text": "" if text is None else str(text),
             "streak": int(streak or 0),
             "source": source,
+            "hex": bytes(raw_bytes).hex() if isinstance(raw_bytes, (bytes, bytearray)) else "",
             "watch": _jsonable(watch_cfg or {}),
         }
         with self._lock:
@@ -189,10 +194,16 @@ def main(argv=None):
         try:
             payload = json.loads(line)
             engine = RuleEngine(payload.get("watch") or {})
+            raw_hex = payload.get("hex") or ""
+            try:
+                raw_bytes = bytes.fromhex(raw_hex) if raw_hex else None
+            except ValueError:
+                raw_bytes = None
             results = engine.evaluate(
                 payload.get("text", ""),
                 payload.get("streak", 0),
                 payload.get("source", "watch"),
+                raw_bytes,
             )
             out = {
                 "results": [r.to_dict() for r in results],

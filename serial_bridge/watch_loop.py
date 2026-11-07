@@ -43,7 +43,7 @@ class WatchLoop(object):
         self.device = ""
         self.running = False
         # 判定统一交给 RuleChecker（与管家共用同一份逻辑，不再各写一份）
-        self.checker = RuleChecker(scene, state, logger, send_action=self.send_raw)
+        self.checker = RuleChecker(scene, state, logger, send_action=self._send_rule)
 
     def start(self, device, baud):
         self.stop()
@@ -81,16 +81,21 @@ class WatchLoop(object):
             self.buffer.clear()
             return data
 
-    def send_raw(self, command, raw_bytes=None):
+    def send_raw(self, command, raw_bytes=None, source="timer"):
         """发一条命令并返回回显文本。
 
         持有句柄就写句柄（监视模式）；没持有就临时开口（轻模式）。
         定时发送和"规则自动处置"都走这里，所以两种模式行为一致。
 
+        source 决定网页上这条命令挂什么徽章：
+          "timer" 定时发送（用户自己设的，黄）
+          "rule"  规则自动处置（**系统自己动手**，红 —— 最需要被看见的一类）
+        以前两者共用默认值 "auto"，页面上全显示成「定时」，
+        等于把"系统自主行为"藏进了"我自己设的"里（用户实测报的 bug）。
+
         raw_bytes 不为 None 时按原始字节发送（hex 场景的命令），两条路径都要尊重它。
 
-        每次发送都会往 auto_frames 里记一帧，网页据此显示
-        `>> 命令` + 回显——否则自动发送的内容只进日志，用户在页面上看不到（Bug 4）。
+        每次发送都会往 auto_frames 里记一帧，网页据此显示命令 + 回显。
         """
         cfg = self.scene.cfg
         newline = serial_io.decode_newline(cfg.get("newline"), "\\r\\n")
@@ -102,7 +107,7 @@ class WatchLoop(object):
                 self.ser.write(str(command).encode("utf-8") + newline)
             self.logger.append("TX", command)
             # 监视模式：回显走读线程进 buffer，这里只记"发了什么"
-            self._push_frame(command, "", "", 0)
+            self._push_frame(command, "", "", 0, source)
             return ""
         resolved = resolve_port(cfg)
         with self.port_lock:
@@ -111,13 +116,22 @@ class WatchLoop(object):
         self.logger.append("TX", command)
         if result["rx_text"]:
             self.logger.append("RX", result["rx_text"])
-        self._push_frame(command, result["rx_text"], result["rx_hex"], result["bytes"])
+        self._push_frame(command, result["rx_text"], result["rx_hex"], result["bytes"],
+                         source)
         # 轻模式的自动发送也要更新"无回显计数"，否则 no_response 规则永远不触发
         if result["empty"]:
             self.no_response_streak += 1
         else:
             self.no_response_streak = 0
         return result["rx_text"]
+
+    def _send_rule(self, command):
+        """规则自动处置的发送回调：单独包一层，只为把来源标成 "rule"。
+
+        不直接在 RuleChecker 里传 source，是因为"怎么发"属于这一层，
+        判定层不该知道网页徽章长什么样。
+        """
+        return self.send_raw(command, source="rule")
 
     def _push_frame(self, tx, rx, rx_hex, nbytes, source="auto"):
         with self.lock:
@@ -152,7 +166,7 @@ class WatchLoop(object):
             self.no_response_streak = 0
             # 刚手动/网页发过命令 → 这段回显算 manual，否则算轮询 watch
             source = "manual" if time.time() < self._manual_until else "watch"
-            self._run_checks(text, source)
+            self._run_checks(text, source, chunk)
 
     def _send_loop(self):
         """（已停用）定时发送现在由 WebServer._autosend_loop 统一负责。
@@ -165,6 +179,10 @@ class WatchLoop(object):
         return
 
 
-    def _run_checks(self, text, source):
-        """判定入口：委托给共用的 RuleChecker（开关/熔断/告警都在那边）。"""
-        self.checker.run(text, source, self.no_response_streak)
+    def _run_checks(self, text, source, raw_bytes=None):
+        """判定入口：委托给共用的 RuleChecker（开关/熔断/告警都在那边）。
+
+        raw_bytes 一定要传：hex / hex_regex 判据比的是原始字节，
+        只给解码后的 text 会把 0xFF 变成替换符，永远命中不了。
+        """
+        self.checker.run(text, source, self.no_response_streak, raw_bytes=raw_bytes)

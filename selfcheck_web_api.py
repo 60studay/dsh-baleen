@@ -393,6 +393,20 @@ def run_checks(base, original):
     check("POST /rules  缺 rules  kind=config", err_kind(data) == "config",
           str(data)[:120])
 
+    # 19b. /watch 不传 check_source 时不许把已有的值写成空
+    #      （空串会让判定静默关闭，UI 上还看不出来）
+    before = as_json(http_get(base, "/status")[1]) or {}
+    before_src = (before.get("watch") or {}).get("check_source")
+    http_post(base, "/watch", {"check_enabled": False})
+    after = as_json(http_get(base, "/status")[1]) or {}
+    after_src = (after.get("watch") or {}).get("check_source")
+    check("POST /watch  没传 check_source 不改原值", before_src == after_src,
+          "%r -> %r" % (before_src, after_src))
+    status, text = http_post(base, "/watch", {"check_source": "乱写"})
+    data = as_json(text)
+    check("POST /watch  check_source 非法值被拒",
+          data is not None and data.get("ok") is not True, str(data)[:120])
+
     # 20. 未知 POST 应该 404
     status, text = http_post(base, "/this-post-does-not-exist", {})
     data = as_json(text)

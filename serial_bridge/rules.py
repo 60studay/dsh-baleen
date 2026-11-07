@@ -25,9 +25,48 @@ import re
 import threading
 import time
 
-RULE_TYPES = ("contains", "regex", "no_response", "equals")
+# contains/equals/regex 判的是**解码后的文本**；
+# hex/hex_regex 判的是**原始字节**——串口最需要判的恰恰是二进制（帧头、CRC、故障码）。
+# 没有这两个类型时，"正则 \\xff{3,}"永远不可能命中：0xFF 不是合法 UTF-8，
+# 解码后变成 U+FFFD（替换符），跟 chr(255) 是两个字符。
+RULE_TYPES = ("contains", "regex", "no_response", "equals", "hex", "hex_regex")
 
 DEFAULT_COOLDOWN_S = 5.0
+
+# 判定来源开关。注意 "all" 是历史别名（手写 config 里出现过），统一归到 "both"。
+CHECK_SOURCES = ("watch_only", "manual_only", "both")
+
+
+def normalize_check_source(value):
+    text = str(value or "").strip().lower()
+    if text == "all":
+        return "both"
+    return text
+
+# 合并 watch 配置时，这些"空值"不算用户设置过，不许覆盖下层的值。
+_EMPTY_VALUES = (None, "", [], {}, ())
+
+
+def merge_watch(*layers):
+    """按顺序合并 watch 配置，**后层的空值不覆盖前层**。
+
+    为什么不能直接 `{**a, **b}`：
+      状态文件里会存 `check_source: ""`（前端没传这个字段就被写成了空串），
+      于是合法值 "all" 被空串盖掉，`RuleChecker` 里
+      `want = watch.get("check_source") or "watch_only"` 回落成 watch_only，
+      **判定被静默关掉，界面上还看不出来**。这个坑真实发生过。
+
+    注意 False / 0 是**合法值**，不能当空值跳过（send_enabled=false 就是"关掉"）。
+    """
+    out = {}
+    for layer in layers:
+        if not isinstance(layer, dict):
+            continue
+        for key, value in layer.items():
+            if value in _EMPTY_VALUES:
+                continue
+            out[key] = value
+    return out
 
 
 class RuleResult(object):
@@ -77,16 +116,20 @@ class RuleEngine(object):
     def allowlist_empty(self):
         return not self.allowed
 
-    def evaluate(self, text, no_response_streak=0, source="watch"):
-        """对所有规则跑一遍。本函数永不抛异常。"""
+    def evaluate(self, text, no_response_streak=0, source="watch", raw_bytes=None):
+        """对所有规则跑一遍。本函数永不抛异常。
+
+        raw_bytes 是**原始字节**（hex / hex_regex 判据要用）；不传就按 UTF-8 编码 text。
+        """
         results = []
         if self._stopped:
             return results
         for rule in self.rules:
-            results.append(self._evaluate_one(rule, text, no_response_streak, source))
+            results.append(self._evaluate_one(rule, text, no_response_streak, source,
+                                              raw_bytes))
         return results
 
-    def _evaluate_one(self, rule, text, no_response_streak, source):
+    def _evaluate_one(self, rule, text, no_response_streak, source, raw_bytes=None):
         name = str((rule or {}).get("name") or "未命名规则")
         when = (rule or {}).get("when") or {}
         rule_type = str(when.get("type") or "").strip()
@@ -100,7 +143,8 @@ class RuleEngine(object):
             return RuleResult(name, skipped="cooldown %.1fs" % (self.cooldown_s - (now - last)))
 
         try:
-            matched, reason = self._test(rule_type, when, text, no_response_streak)
+            matched, reason = self._test(rule_type, when, text, no_response_streak,
+                                         raw_bytes)
         except Exception as exc:  # 非法正则、类型不对……一律只记 error
             self.log("rule %r error: %s" % (name, exc))
             return RuleResult(name, error=str(exc))
@@ -121,7 +165,7 @@ class RuleEngine(object):
         self._last_fired[name] = now
         return RuleResult(name, matched=True, reason=reason, action=action or None)
 
-    def _test(self, rule_type, when, text, no_response_streak):
+    def _test(self, rule_type, when, text, no_response_streak, raw_bytes=None):
         raw = "" if text is None else str(text)
         if rule_type == "contains":
             needle = str(when.get("value") or "")
@@ -147,6 +191,26 @@ class RuleEngine(object):
             need = int(when.get("consecutive") or 3)
             return no_response_streak >= need, "连续 %d 次无回显（阈值 %d）" % (
                 no_response_streak, need)
+        if rule_type in ("hex", "hex_regex"):
+            data = _as_bytes(raw_bytes, raw)
+            if rule_type == "hex":
+                needle = _parse_hex(when.get("value") or when.get("bytes"))
+                if not needle:
+                    raise ValueError("hex 需要 value，例如 \"AA 55 FF\"")
+                hit = needle in data
+                return hit, ("原始字节包含 %s" % _hex_text(needle)) if hit else (
+                    "原始字节不含 %s（共 %d 字节）" % (_hex_text(needle), len(data)))
+            # hex_regex：直接把模式编码成 bytes 去搜，绕开"UTF-8 解码把 0xFF 变成替换符"
+            pattern = str(when.get("pattern") or when.get("value") or "")
+            if not pattern:
+                raise ValueError("hex_regex 需要 pattern")
+            try:
+                pattern_bytes = pattern.encode("latin-1")
+            except UnicodeEncodeError:
+                raise ValueError("hex_regex 的模式只能包含 0-255 的字符（建议写成 \\xff）")
+            if re.search(pattern_bytes, data):
+                return True, "字节正则 %r 命中" % pattern
+            return False, "字节正则 %r 未命中（共 %d 字节）" % (pattern, len(data))
         raise ValueError("unknown rule type")
 
     def _is_allowed(self, command):
@@ -177,6 +241,31 @@ class RuleEngine(object):
         with self._lock:
             self._stopped = False
             self._consecutive_failures = 0
+
+
+def _as_bytes(raw_bytes, text):
+    """拿到原始字节：优先用调用方给的 raw_bytes，没有才退回把文本按 UTF-8 编码。"""
+    if isinstance(raw_bytes, (bytes, bytearray)):
+        return bytes(raw_bytes)
+    return ("" if text is None else str(text)).encode("utf-8", errors="replace")
+
+
+def _parse_hex(value):
+    """把 "AA 55 FF" / "AA55FF" / ["AA","55","FF"] 解析成 b"\\xaa\\x55\\xff"。"""
+    if isinstance(value, (list, tuple)):
+        value = " ".join(str(item) for item in value)
+    text = str(value or "")
+    text = re.sub(r"[^0-9a-fA-F]", "", text)
+    if not text or len(text) % 2:
+        return b""
+    try:
+        return bytes.fromhex(text)
+    except ValueError:
+        return b""
+
+
+def _hex_text(data):
+    return " ".join("%02X" % byte for byte in data)
 
 
 def _normalize_allowlist(value):

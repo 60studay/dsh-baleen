@@ -8,6 +8,7 @@
 现在两边都只用这一个入口。差异靠参数表达，不靠复制代码。
 """
 
+from .rules import merge_watch, normalize_check_source
 from .runner import RuleWorker
 
 
@@ -30,12 +31,23 @@ class RuleChecker(object):
         self.stopped = False
 
     # ── 对外唯一入口 ────────────────────────────────────────────────────────
-    def run(self, text, source, no_response_streak=0):
-        """跑一次判定。**绝不抛异常**：判定再炸也不能影响收发。"""
-        watch = self.state.read().get("watch") or {}
+    def run(self, text, source, no_response_streak=0, raw_bytes=None):
+        """跑一次判定。**绝不抛异常**：判定再炸也不能影响收发。
+
+        raw_bytes 是原始字节，hex / hex_regex 判据要用（文本解码会丢 0xFF 之类）。
+        """
+        # 配置改了就重载：否则用户改完规则必须重启网页才生效（真实 bug）。
+        # 先比 mtime，没变就不读盘——判定可能每秒跑很多次。
+        try:
+            self.scene.reload_if_changed()
+        except Exception:
+            pass
+        # 开关也要**合并**看：只看状态文件的话，config 里写的 check_source 被忽略，
+        # 于是"配置写 both、判定却按 watch_only 走"——判定被静默关掉，很难查。
+        watch = merge_watch(self.scene.watch_cfg(), self.state.read().get("watch") or {})
         if not watch.get("check_enabled"):
             return
-        want = str(watch.get("check_source") or "watch_only")
+        want = normalize_check_source(watch.get("check_source") or "watch_only")
         if want == "watch_only" and source != "watch":
             return
         if want == "manual_only" and source != "manual":
@@ -44,7 +56,9 @@ class RuleChecker(object):
             return
 
         try:
-            cfg = {**self.scene.watch_cfg(), **watch}
+            # 合并顺序：配置打底、状态覆盖；但状态里的空值不算"设置过"
+            # （否则 check_source="" 会把 "all" 盖掉，判定被静默关掉）
+            cfg = watch
             if self._worker is None:
                 # 这个超时是"等判定子进程回一行 JSON"的预算，必须覆盖一次进程冷启动
                 # （实测 ~250ms），不能用单条规则的 100ms 语义。
@@ -52,7 +66,7 @@ class RuleChecker(object):
                     package_root=self.package_root,
                     timeout_ms=int(cfg.get("rule_worker_timeout_ms") or 2000))
             results, error = self._worker.evaluate(
-                text, cfg, int(no_response_streak or 0), source)
+                text, cfg, int(no_response_streak or 0), source, raw_bytes=raw_bytes)
             if error:
                 self.logger.append("RULE", "判定已跳过：%s" % error)
                 self._note_failure(error, cfg)
@@ -63,6 +77,10 @@ class RuleChecker(object):
                 if result.get("error"):
                     self.logger.append("RULE", "规则 %s 出错: %s"
                                        % (result.get("rule"), result.get("error")))
+                    # 规则**匹配上了**但动作被拒（白名单/熔断），也算"系统想动手"，
+                    # 必须让用户看见。只写日志的话，用户会以为规则根本没触发。
+                    if result.get("matched"):
+                        self._alert_blocked(result, text, source)
                     continue
                 if not result.get("matched"):
                     continue
@@ -80,6 +98,9 @@ class RuleChecker(object):
             "source": source,
             "response": (text or "")[:400],
             "action": command or "(仅通知)",
+            # sent 一定要有默认值：以前没发送时这个键根本不存在，
+            # 前端/脚本读不到就得靠"字段缺失"猜，很容易看成"发了"。
+            "sent": False,
         }
         if command and self.send_action is not None:
             try:
@@ -89,6 +110,18 @@ class RuleChecker(object):
                 record["sent"] = False
                 record["send_error"] = str(exc)
         self.state.append_alert(record)
+
+    def _alert_blocked(self, result, text, source):
+        """匹配上了但动作没执行：记一条"被拒绝"的告警，而不是只写日志。"""
+        self.state.append_alert({
+            "rule": result.get("rule"),
+            "reason": result.get("reason"),
+            "source": source,
+            "response": (text or "")[:400],
+            "action": "(被拒绝)",
+            "sent": False,
+            "error": result.get("error"),
+        })
 
     def _note_failure(self, reason, cfg):
         """连续判定失败 → 停判定并记一条大警告（收发完全不受影响）。"""
