@@ -244,11 +244,20 @@
     if (ch) ch.textContent = CONTROL_HINT[st] || '';
 
     var w = data.watch || {};
-    $('sendEnabled').checked = !!w.send_enabled;
-    $('checkEnabled').checked = !!w.check_enabled;
-    if (w.command && !$('watchCommand').value) $('watchCommand').value = w.command;
-    if (w.interval_ms) $('watchInterval').value = w.interval_ms;
-    if (w.check_source) $('checkSource').value = w.check_source;
+    // ⚠️ 用户正在编辑表单时**不许用轮询的值覆盖他**。
+    // /status 每 700ms 拉一次，以前这里无条件写回，等于"根本改不了"：
+    // 删掉一位数字，0.7 秒后它自己跳回来（用户实测报的 bug）。
+    // 只跳过**表单控件**；规则列表、告警、状态胶囊这些只读展示照常刷新，
+    // 否则用户改完规则看不到变化。
+    var ae = document.activeElement;
+    var editingForm = ae && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName);
+    if (!editingForm) {
+      $('sendEnabled').checked = !!w.send_enabled;
+      $('checkEnabled').checked = !!w.check_enabled;
+      if (w.command && !$('watchCommand').value) $('watchCommand').value = w.command;
+      if (w.interval_ms) $('watchInterval').value = w.interval_ms;
+      if (w.check_source) $('checkSource').value = w.check_source;
+    }
 
     var rs = $('ruleState');
     if (data.resolve_error) {
@@ -420,26 +429,38 @@
     }
   });
 
-  /* ── 主题（跟随系统 / 深 / 亮）────────────────────────── */
-  // 用户："希望颜色也能跟着电脑配置来"。默认跟随系统；
-  // 想固定也能固定（串口工具长时间盯着，有人就喜欢深色）。
+  /* ── 主题（一个图标循环切换）──────────────────────────────
+   *  用户："占 3 个栏的位置还是太大了，可以改成一个图标，
+   *        先是太阳，点一下变成月亮，再点一下变成自动"。
+   *  图标用纯字符而不是 emoji：emoji 带变体选择符，不同系统渲染差别大。
+   */
   var THEME_KEY = 'whale.theme';
+  var THEME_ORDER = ['light', 'dark', 'auto'];
+  var THEME_ICON = { light: '☀', dark: '☾', auto: '◐' };
+  var THEME_NAME = { light: '亮色', dark: '深色', auto: '跟随系统' };
 
   function applyTheme(theme) {
+    var name = THEME_ORDER.indexOf(theme) >= 0 ? theme : 'auto';
     var html = document.documentElement;
-    if (theme === 'dark' || theme === 'light') html.setAttribute('data-theme', theme);
+    if (name === 'dark' || name === 'light') html.setAttribute('data-theme', name);
     else html.removeAttribute('data-theme');
-    document.querySelectorAll('.theme-btn').forEach(function (btn) {
-      btn.classList.toggle('active', btn.getAttribute('data-theme') === (theme || 'auto'));
-    });
+    var icon = $('themeIcon');
+    if (icon) icon.textContent = THEME_ICON[name];
+    var btn = $('themeBtn');
+    if (btn) {
+      // 只有图标没有文字：title 和 aria-label 都写**当前**状态，
+      // 否则用户记不住这个符号现在代表什么。
+      btn.title = '配色：' + THEME_NAME[name] + '（点击切换）';
+      btn.setAttribute('aria-label', '配色：' + THEME_NAME[name] + '，点击切换');
+    }
   }
 
-  document.querySelectorAll('.theme-btn').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      var theme = btn.getAttribute('data-theme');
-      applyTheme(theme);
-      try { localStorage.setItem(THEME_KEY, theme); } catch (e) { /* 隐私模式忽略 */ }
-    });
+  $('themeBtn').addEventListener('click', function () {
+    var cur = 'auto';
+    try { cur = localStorage.getItem(THEME_KEY) || 'auto'; } catch (e) { /* 忽略 */ }
+    var next = THEME_ORDER[(THEME_ORDER.indexOf(cur) + 1) % THEME_ORDER.length];
+    applyTheme(next);
+    try { localStorage.setItem(THEME_KEY, next); } catch (e) { /* 隐私模式忽略 */ }
   });
 
   var savedTheme = 'auto';

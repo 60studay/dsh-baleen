@@ -70,15 +70,15 @@
   #alertbarClose:hover { color: #fff; background: rgba(255,255,255,.10); }
   main { flex: 1; display: flex; min-height: 0; }
 
-  /* ── 页头主题切换（跟随 / 深 / 亮）────────────────────── */
-  .theme-switch { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+  /* ── 页头配色按钮（一个图标循环切换）────────────────── */
   .theme-btn {
-    background: transparent; color: var(--muted); border: none;
-    padding: 3px 9px; font-size: 12px; cursor: pointer;
+    background: transparent; color: var(--muted); border: 1px solid var(--line);
+    border-radius: 4px; padding: 2px 8px; font-size: 14px; line-height: 1.4;
+    cursor: pointer; min-width: 32px;
   }
-  .theme-btn + .theme-btn { border-left: 1px solid var(--line); }
   .theme-btn:hover { color: var(--fg); background: var(--panel); }
-  .theme-btn.active { background: var(--accent); color: var(--btn-fg); }
+  /* 只有图标没有文字，键盘聚焦必须看得见 */
+  .theme-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
   /* ── 拖拽条 ──────────────────────────────────────────────
      自己写而不是引 split.js：这个项目零依赖。
