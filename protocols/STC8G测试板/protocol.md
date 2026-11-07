@@ -1,0 +1,136 @@
+# STC8G测试板 场景协议
+
+> **用途**：给鲸歌一个**可预期**的测试靶子。
+> 回包固定格式、毫秒级、不会动、不会堵转 —— 和底盘正好相反。
+
+## 硬件
+
+- 芯片：**STC8G1K08A-8PIN**（8KB flash / 4KB EEPROM）
+- 串口：CH340（USB 转串口），115200 8N1
+- 固有 ID：`F794C57C155D3F`（BSL 版本 7.3.13U）
+- 工程源码：`E:\DSHwork\Embedded study\stc8g-lab`
+
+### 接线（8 脚全用）
+
+| 引脚 | 用途 | 接法 |
+|---|---|---|
+| P3.0 | RXD | ← CH340 TXD |
+| P3.1 | TXD | → CH340 RXD |
+| P3.2 | LED | **低电平点亮**：VCC → 1kΩ → LED正 → LED负 → P3.2 |
+| P3.3 | 按键 | P3.3 → 按键 → GND（内部上拉，按下=0） |
+| P5.4 | 备用 | — |
+| P5.5 | 备用 | — |
+| VCC | 电源 | 板载供电，**别从 CH340 取** |
+| GND | 地 | 必须和 CH340 共地 |
+
+⚠️ **P3.2 是双身份**：既是 LED，也是 ADC 通道 2。当数字输出用就不能同时当模拟输入。
+
+## 命令表 v2（ASCII，`\r\n` 结尾）
+
+### 礼貌命令
+
+| 命令 | 回包 | 用途 |
+|---|---|---|
+| `?` | `OK HELP P V L0 L1 K E D N J S B` | 探活 + 列命令 |
+| `P` | `OK PONG` | 最小往返，最快的连通性检查 |
+| `V` | `OK VER stc8g-lab v2` | 确认烧的是哪版固件 |
+| `L0` | `OK LED 0` | 点亮 LED（P3.2=0） |
+| `L1` | `OK LED 1` | 熄灭 LED |
+| `K` | `OK KEY 0` / `OK KEY 1` | 读按键（**0 = 按下**） |
+| `E <文本>` | `OK ECHO <文本>` | 回环，测长帧/中文/二进制 |
+| 其它 | `ERR CMD <首字母>` | 错误路径 |
+
+上电先发一行：`BOOT stc8g-lab v2`
+
+### 故障注入命令（v2 新增，最重要）
+
+**插件真正的风险全在错误路径上。一只永远礼貌回包的设备测不出这些。**
+
+| 命令 | 行为 | 能测什么 |
+|---|---|---|
+| `D <ms>` | 等 ms 毫秒再回 `OK DELAY <ms>`（上限 5000） | 超时判定、`wait_first_byte_ms`、`quiet_ms` |
+| `N <n>` | 只发 `OK PONG\r\n` 前 n 字节（默认 4，**无 CRLF**） | 半包处理 |
+| `J <n>` | 先发 n 个 `0xFF`，再 `OK PONG` | 垃圾字节会不会触发规则误判 |
+| `S <n>` | 连发 n 字节 `A..Z` 循环，再 `\r\nOK DONE <n>`（上限 200） | 长突发、读缓冲、粘包 |
+| `B` | 一帧纯二进制，**无 CRLF** | hex 显示、二进制分帧 |
+
+`B` 的帧格式：
+```
+AA 55 08 00 41 42 43 44 45 46 47 48 EF 21
+│  │  └─┬─┘ └────── payload "A".."H" ──────┘ └─┬─┘
+│  │    len=8                              CRC16-CCITT
+│  └─ 帧头 2（0x55）
+└─ 帧头 1（0xAA）
+```
+
+## 实测记录（2026-11-07 11:00 · v2）
+
+### 礼貌命令
+```
+P            -> OK PONG
+V            -> OK VER stc8g-lab v2
+?            -> OK HELP P V L0 L1 K E D N J S B
+K            -> OK KEY 1
+E hello      -> OK ECHO hello
+E 中文测试 12345 -> OK ECHO 中文测试 12345   （UTF-8 直通）
+```
+
+### 故障注入（原始回包）
+```
+D 200        -> 首字节  279 ms    OK DELAY 200
+D 800        -> 首字节  946 ms    OK DELAY 800
+D 2000       -> 首字节 2253 ms    OK DELAY 2000
+N 4          -> b'OK P'                                （4 字节，确实没 CRLF）
+J 8          -> b'\xff'*8 + b'OK PONG\r\n'
+S 32         -> b'ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEF' + b'\r\nOK DONE 32\r\n'
+B            -> AA 55 08 00 41 42 43 44 45 46 47 48 EF 21
+```
+
+### 通过鲸歌插件端到端验证
+```
+serial_send(scene="STC8G测试板", command="V")
+  -> OK VER stc8g-lab v2                                   ✅
+
+serial_send(scene="STC8G测试板", command="D 500")
+  -> (无回显) + no_response 警告                            ✅ 期望行为
+     （场景 wait_first_byte_ms=300，而设备故意拖了 500ms）
+     警告里带出了本场景专属提示（config.json 的 no_response_hint）
+```
+
+**这一条最有价值**：证明靶子能主动把插件逼进错误路径，而且
+`no_response_hint` 机制确实能把"设备专属知识"留在场景配置里，不污染插件代码。
+
+## 为什么这个靶子适合做回归
+
+| 特性 | 好处 |
+|---|---|
+| 回包固定、毫秒级 | 可以断言，不用等 0.5 秒 |
+| `V` 回版本号 | 能确认"烧的是新固件"而不是旧程序 |
+| `L0`/`L1` 有物理副作用 | 验证"命令真的执行了"，不只看回包 |
+| `K` 有物理输入 | 能测输入方向 |
+| `E` 回环 | 能测长帧、粘包、二进制、编码 |
+| 不会动 | 桌面测试安全，不用架空轮子 |
+
+## 烧录（写新固件时）
+
+STC 用**冷启动**下载，不需要 ST-Link：
+
+```bash
+cd "E:\DSHwork\Embedded study\stc8g-lab"
+python flash.py --com COM7
+```
+
+看到提示就去断电再上电。
+
+**两个坑**（都踩过）：
+1. **不要加 `-t`**（频率微调）。`-t 11059200` 会让 stcgal 请求芯片精确调到 11.0592MHz，
+   而 STC8G1K08A 的步进落不到这个值，直接报 `frequency trimming unsuccessful`。
+   芯片当前是 11.054MHz，误差 0.05%，够用，别动。
+2. **如果 CH340 和 MCU 共用一路 USB**，"断电上电"会把 CH340 一起断掉，
+   已经打开的句柄当场失效（`WriteFile failed`）。`flash.py` 已加 3 次自动重试。
+
+## 端口
+
+配置里写的是 `"com": "COM7"`。**插拔后号会变**，用 `serial_list` 看当前是哪个。
+（没写 `match: "CH340"` 是因为蓝牙AT场景也匹配 CH340，
+两个都插着会触发 `ambiguous_device`。）

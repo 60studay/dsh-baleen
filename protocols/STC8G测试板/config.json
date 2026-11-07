@@ -1,0 +1,31 @@
+{
+  "com": "COM7",
+  "match": "",
+  "match_vid_pid": "",
+  "baud": 115200,
+  "bytesize": 8,
+  "parity": "N",
+  "stopbits": 1,
+  "newline": "\\r\\n",
+  "wait_first_byte_ms": 300,
+  "quiet_ms": 80,
+  "watch": {
+    "send_enabled": false,
+    "check_enabled": true,
+    "check_source": "watch_only",
+    "command": "P",
+    "interval_ms": 1000,
+    "rules": [],
+    "allowed_auto_commands": [
+      "P",
+      "V",
+      "K",
+      "L0",
+      "L1"
+    ]
+  },
+  "no_response_hint": [
+    "这块板子可能只是被 D 命令故意拖慢了（D <ms>），把 wait_first_byte_ms 调大再试",
+    "发 V 确认固件在跑：回 OK VER stc8g-lab v2 就说明链路是通的"
+  ]
+}
