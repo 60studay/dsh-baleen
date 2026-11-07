@@ -1,7 +1,7 @@
 {
-  "com": "COM7",
+  "com": "COM10",
   "match": "",
-  "match_vid_pid": "",
+  "match_vid_pid": "1A86:7523",
   "baud": 115200,
   "bytesize": 8,
   "parity": "N",
@@ -12,20 +12,78 @@
   "watch": {
     "send_enabled": false,
     "check_enabled": true,
-    "check_source": "watch_only",
-    "command": "P",
-    "interval_ms": 1000,
-    "rules": [],
+    "check_source": "all",
+    "command": "V",
+    "interval_ms": 2000,
+    "rules": [
+      {
+        "name": "错误命令就查版本",
+        "when": {
+          "type": "contains",
+          "value": "ERR CMD"
+        },
+        "then": {
+          "send": "V",
+          "max_retries": 2
+        },
+        "notify": true
+      },
+      {
+        "name": "参数错误",
+        "when": {
+          "type": "contains",
+          "value": "ERR ARG"
+        },
+        "then": {
+          "notify": "参数不对"
+        },
+        "notify": true
+      },
+      {
+        "name": "垃圾数据",
+        "when": {
+          "type": "hex_regex",
+          "value": "\\xff{3,}"
+        },
+        "then": {
+          "notify": "收到连续0xFF"
+        },
+        "notify": true
+      },
+      {
+        "name": "设备失联",
+        "when": {
+          "type": "no_response",
+          "consecutive": 3
+        },
+        "then": {
+          "notify": "连续3次无回显"
+        },
+        "notify": true
+      },
+      {
+        "name": "版本不符",
+        "when": {
+          "type": "regex",
+          "value": "OK VER (?!stc8g-lab v4)"
+        },
+        "then": {
+          "notify": "固件不是v4"
+        },
+        "notify": true
+      }
+    ],
     "allowed_auto_commands": [
       "P",
       "V",
       "K",
       "L0",
-      "L1"
+      "L1",
+      "?"
     ]
   },
   "no_response_hint": [
     "这块板子可能只是被 D 命令故意拖慢了（D <ms>），把 wait_first_byte_ms 调大再试",
-    "发 V 确认固件在跑：回 OK VER stc8g-lab v2 就说明链路是通的"
+    "发 V 看版本号对不对：回 OK VER 且版本匹配才说明链路是通的（当前 v4）"
   ]
 }
