@@ -22,7 +22,7 @@ from . import io as serial_io
 from .channel import Channel, run_evidence
 from .config import load_scene
 from .errors import BridgeError
-from .ports import resolve_port, scan_ports
+from .ports import resolve_port, scan_ports, guess_port
 from .port_manager import PortManager
 from .rule_checker import RuleChecker
 from .watch_loop import WatchLoop
@@ -641,15 +641,40 @@ class WebServer(object):
         return {"ok": True, "port": self.current_device()["device"], "baud": self.effective_cfg().get("baud")}
 
     def autodetect(self):
-        """AI 自动选择：按场景的 match / match_vid_pid 规则扫描并说明理由。"""
-        resolved = resolve_port(self.scene.cfg)
+        """AI 自动选择：先按配置解析，配不上时**真的去猜**。
+
+        以前它只做"解析"：配置写死 COM7、设备被 Windows 换成 COM10 时直接抛错，
+        把正确的候选列在错误信息里却不去选。按钮叫「AI 自动选择」，
+        用户期待的是"你帮我找找"——用户实测踩过（拔插 USB 换了口）。
+        """
+        cfg = self.scene.cfg
         reasons = {
-            "match_vid_pid": "按 VID:PID %s 精确匹配" % self.scene.cfg.get("match_vid_pid"),
-            "match": "按描述关键字 %r 匹配" % self.scene.cfg.get("match"),
+            "match_serial": "按序列号 %r 精确匹配" % cfg.get("match_serial"),
+            "match_vid_pid": "按 VID:PID %s 精确匹配" % cfg.get("match_vid_pid"),
+            "match": "按描述关键字 %r 匹配" % cfg.get("match"),
             "com": "配置里指定的串口号可用",
             "only_port": "当前只有一个串口设备",
+            "only_usb_port": "当前只有一个真实 USB 串口（已排除蓝牙虚拟口）",
         }
-        return {
+        try:
+            resolved = resolve_port(cfg)
+        except BridgeError as exc:
+            # 只有"配置解析不出来"才去猜；端口被占用之类不能靠猜解决
+            if exc.kind not in ("no_device", "ambiguous_device", "config"):
+                raise
+            resolved = guess_port(cfg)
+            if resolved is None:
+                raise exc
+            story = {
+                "match_serial": "按序列号",
+                "match_vid_pid": "按 VID:PID",
+                "match": "按描述关键字",
+                "only_usb_port": "按「只有一块真实 USB 串口」",
+            }.get(resolved["source"], "按规则")
+            resolved["note"] = ("配置里的串口已经不可用，%s 重新找到了它；"
+                                "建议把 config.json 改成 match_vid_pid 或 match_serial，"
+                                "以后换 USB 口就不用管了" % story)
+        result = {
             "ok": True,
             "port": resolved["device"],
             "description": resolved["description"],
@@ -657,6 +682,12 @@ class WebServer(object):
             "reason": reasons.get(resolved["source"], resolved["source"]),
             "note": resolved["note"],
         }
+        # 序列号一并回传：两块同型号板子（都是 CH340）时，这是唯一能分清的依据
+        for port in scan_ports():
+            if port["device"].lower() == resolved["device"].lower():
+                result["serial_number"] = port.get("serial_number") or ""
+                break
+        return result
 
     def set_mode(self, mode):
         if mode not in ("light", "watch"):

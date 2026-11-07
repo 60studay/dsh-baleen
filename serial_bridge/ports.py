@@ -105,6 +105,74 @@ def _available_hint(ports):
     return ["当前可用串口：" + "、".join(port_label(p)["device"] for p in ports)]
 
 
+def _match_by_serial(ports, wanted):
+    target = str(wanted or "").strip().lower()
+    if not target:
+        return []
+    return [p for p in ports
+            if str(p.get("serial_number") or "").strip().lower() == target]
+
+
+def real_ports(ports):
+    """只留**真实的 USB 串口**，把蓝牙/虚拟串口挡在外面。
+
+    为什么必须挡：Windows 上一对蓝牙虚拟口是没有 VID:PID 的，而且一插就两三个。
+    旧代码用 `len(ports) == 1` 做"只有一个设备就自动纠正"，
+    用户机器上有 7 个口（6 个蓝牙）→ 这个条件**永远不成立** → 换 USB 口后彻底失效。
+
+    判据：有 VID:PID 才算真设备；描述里带蓝牙/Bluetooth 的一律排除。
+    """
+    out = []
+    for port in ports:
+        if not str(port.get("vid_pid") or "").strip():
+            continue
+        desc = str(port.get("description") or "").lower()
+        if "蓝牙" in desc or "bluetooth" in desc:
+            continue
+        out.append(port)
+    return out
+
+
+def _guess(port, source):
+    return {
+        "device": port["device"],
+        "description": port.get("description", ""),
+        "vid_pid": port.get("vid_pid", ""),
+        "source": source,
+        "note": "",
+    }
+
+
+def guess_port(cfg, ports=None):
+    """配置解析不出来时**真的去猜**该用哪个口；猜不出来返回 None。
+
+    这是按钮叫「AI 自动选择」该有的行为：配置写死 COM7、设备却被 Windows
+    换成了 COM10 时，用户期待它去找，而不是把候选列在错误信息里然后不动。
+
+    顺序：match_serial（芯片唯一）→ match_vid_pid → match → 只剩一个真实 USB 串口。
+    **只在真实 USB 串口里猜**，蓝牙虚拟口不参与（见 real_ports）。
+    """
+    ports = scan_ports() if ports is None else ports
+    real = real_ports(ports)
+
+    hits = _match_by_serial(real, cfg.get("match_serial"))
+    if len(hits) == 1:
+        return _guess(hits[0], "match_serial")
+
+    hits = _match_by_vid_pid(real, cfg.get("match_vid_pid"))
+    if len(hits) == 1:
+        return _guess(hits[0], "match_vid_pid")
+
+    hits = _match_by_description(real, cfg.get("match"))
+    if len(hits) == 1:
+        return _guess(hits[0], "match")
+
+    if len(real) == 1:
+        return _guess(real[0], "only_usb_port")
+
+    return None
+
+
 def resolve_port(cfg):
     """按 3.1 的顺序解析出真正要用的串口。
 
@@ -120,6 +188,7 @@ def resolve_port(cfg):
     wanted_com = str(cfg.get("com") or "").strip()
     wanted_desc = str(cfg.get("match") or "").strip()
     wanted_vid_pid = str(cfg.get("match_vid_pid") or "").strip()
+    wanted_serial = str(cfg.get("match_serial") or "").strip()
 
     # 1) VID:PID 精确匹配
     if wanted_vid_pid:
@@ -127,6 +196,10 @@ def resolve_port(cfg):
         if len(hits) == 1:
             return _resolved(hits[0], "match_vid_pid", wanted_com)
         if len(hits) > 1:
+            # 同型号有多块（比如两块 CH340）：靠序列号再分一次
+            narrowed = _match_by_serial(hits, wanted_serial)
+            if len(narrowed) == 1:
+                return _resolved(narrowed[0], "match_serial", wanted_com)
             raise _ambiguous(wanted_vid_pid, "match_vid_pid", hits, ports)
         raise BridgeError(
             "no_device",
@@ -136,6 +209,21 @@ def resolve_port(cfg):
                 "设备管理器里有没有黄色感叹号",
                 "是否需要装驱动",
             ] + _available_hint(ports),
+            candidates=[port_label(p) for p in ports],
+        )
+
+    # 1b) 序列号精确匹配：同型号多块板子时唯一能分清的判据（换 USB 口也不变）
+    if wanted_serial:
+        hits = _match_by_serial(ports, wanted_serial)
+        if len(hits) == 1:
+            return _resolved(hits[0], "match_serial", wanted_com)
+        if len(hits) > 1:
+            raise _ambiguous(wanted_serial, "match_serial", hits, ports)
+        raise BridgeError(
+            "no_device",
+            "没找到序列号为 %s 的串口设备。" % wanted_serial,
+            hint=["USB 是否插好", "用 serial_list 看 serial_number 字段"]
+                 + _available_hint(ports),
             candidates=[port_label(p) for p in ports],
         )
 
@@ -162,7 +250,14 @@ def resolve_port(cfg):
         hits = _match_by_device(ports, wanted_com)
         if hits:
             return _resolved(hits[0], "com", wanted_com)
-        # 配置的号不在了，但只有一个设备 → 自动纠正（文档要求"自动使用"）
+        # 配置的号不在了 —— 拔插 USB 后 Windows 换号是常态。
+        # 先看"真实 USB 串口"里是不是只剩一个（蓝牙虚拟口不算，否则永远不成立）。
+        real = real_ports(ports)
+        if len(real) == 1:
+            resolved = _resolved(real[0], "only_usb_port", wanted_com)
+            resolved["note"] = "%s 已不在（拔插后 Windows 会换号），当前唯一的 USB 串口是 %s（%s），已自动切换" % (
+                wanted_com, real[0]["device"], real[0].get("description") or "无描述")
+            return resolved
         if len(ports) == 1:
             resolved = _resolved(ports[0], "only_port", wanted_com)
             resolved["note"] = "%s 已不在，当前只有 %s（%s），已自动切换" % (
@@ -173,21 +268,26 @@ def resolve_port(cfg):
             "%s 打不开：这个串口号当前不存在。" % wanted_com,
             hint=[
                 "USB 是否插好（拔插后 Windows 可能换号）",
-                "设备管理器里有没有黄色感叹号",
-                "是否需要装驱动",
+                "点「AI 自动选择」让它按 VID:PID / 序列号重新找",
+                "或者在侧边栏手动选一个串口",
             ] + _available_hint(ports),
             candidates=[port_label(p) for p in ports],
         )
 
     # 4) 什么都没配
+    real = real_ports(ports)
+    if len(real) == 1:
+        resolved = _resolved(real[0], "only_usb_port", "")
+        resolved["note"] = "场景没配置串口，当前唯一的 USB 串口是 %s，已默认使用" % real[0]["device"]
+        return resolved
     if len(ports) == 1:
         resolved = _resolved(ports[0], "only_port", "")
         resolved["note"] = "场景没配置串口，当前只有 %s，已默认使用" % ports[0]["device"]
         return resolved
     raise BridgeError(
         "config",
-        "场景配置里没有指定串口（com / match / match_vid_pid 都是空的）。",
-        hint=["在该场景的 config.json 里填 \"com\" 或 \"match\"",
+        "场景配置里没有指定串口（com / match / match_vid_pid / match_serial 都是空的）。",
+        hint=["在该场景的 config.json 里填 \"com\" 或 \"match\" 或 \"match_serial\"",
               "用 serial_list 查看当前可用串口"] + _available_hint(ports),
         candidates=[port_label(p) for p in ports],
     )
