@@ -19,6 +19,10 @@ from .errors import BridgeError
 from .ports import resolve_port
 from .transport import create_transport
 
+# 单次收发最多收多少字节。防止"设备一直刷数据"把内存吃满，
+# 也给刷屏设备一个硬上限（实测 STC8G 靶子会连发 OK PONG）。
+MAX_RX_BYTES = 256 * 1024
+
 
 def decode_newline(value, default="\\r\\n"):
     """把配置里的 "\\r\\n" 这类转义串变成真正的字节。"""
@@ -98,19 +102,27 @@ def transact(cfg, device, payload, baud=None, raw_bytes=None):
         out = b""
         t0 = time.time()
         last_byte = None
+        # 总预算：首字节等待 + 静默窗口。
+        # ⚠️ 必须先判预算再读：早期版本把预算检查放在"读到空"的分支里，
+        # 一旦设备**持续刷数据**（实测：STC8G 靶子连发 OK PONG），
+        # 循环会一直 continue，预算永远不检查 → 工具卡死 25s 以上。
+        total_budget_ms = first_byte_ms + gap_ms
         while True:
+            now = time.time()
+            if (now - t0) * 1000 >= total_budget_ms:
+                break
             chunk = ser.read(256)
             now = time.time()
             if chunk:
                 out += chunk
                 last_byte = now
+                if len(out) >= MAX_RX_BYTES:      # 防止刷屏设备把内存吃满
+                    break
                 continue
             if last_byte is None:
                 if (now - t0) * 1000 >= first_byte_ms:
                     break
             elif (now - last_byte) * 1000 >= quiet_ms:
-                break
-            if (now - t0) * 1000 >= first_byte_ms + gap_ms:
                 break
             time.sleep(0.01)
         return {
@@ -179,18 +191,21 @@ def drain(cfg, device, duration_ms=400, baud=None):
         t0 = time.time()
         last_byte = None
         while True:
+            now = time.time()
+            if (now - t0) * 1000 >= budget_ms:      # 预算先判，理由同 transact
+                break
             chunk = ser.read(256)
             now = time.time()
             if chunk:
                 out += chunk
                 last_byte = now
+                if len(out) >= MAX_RX_BYTES:
+                    break
                 continue
             if last_byte is None:
                 if (now - t0) * 1000 >= budget_ms:
                     break
             elif (now - last_byte) * 1000 >= quiet_ms:
-                break
-            if (now - t0) * 1000 >= budget_ms:
                 break
             time.sleep(0.01)
         return {
