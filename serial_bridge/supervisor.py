@@ -855,6 +855,7 @@ class WebServer(object):
         self.httpd.daemon_threads = True
         self.httpd.context = {
             "page": self._page,
+            "asset": _load_asset,
             "status": self.status,
             "poll": self.poll,
             "alerts": self.alerts,
@@ -940,6 +941,34 @@ def _load_page():
             return handle.read()
     except OSError:
         return "<!doctype html><meta charset='utf-8'><h3>web/index.html 缺失</h3>"
+
+
+_ASSET_TYPES = {
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+}
+
+
+def _load_asset(name):
+    """读 web/ 下的静态文件（R2 拆出来的 app.css / app.js）。
+
+    返回 (bytes, content_type)；不存在返回 None。
+    白名单式：只认 .css/.js，且不许带路径分隔符——不给任意文件读取留口子。
+    """
+    base = str(name or "").lstrip("/")
+    if not base or "/" in base or "\\" in base or ".." in base:
+        return None
+    suffix = os.path.splitext(base)[1].lower()
+    content_type = _ASSET_TYPES.get(suffix)
+    if not content_type:
+        return None
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "web", base)
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(), content_type
+    except OSError:
+        return None
 
 
 def run_web(paths, scene_name, port, mode, open_browser):

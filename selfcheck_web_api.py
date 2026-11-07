@@ -194,9 +194,17 @@ def run_checks(base, original):
     #   ① 不再用 ">>" 前缀区分命令（容易和串口数据里的字符混淆）
     #   ② 回显要带「设备」徽章
     #   ③ 两列对齐靠 grid 布局，不靠写死 padding
-    check("收发区没有 '>> ' 前缀", "'> > '" not in text and "'>> ' +" not in text)
-    check("回显有「设备」徽章", "'设备'" in text or '>设备<' in text)
-    check("收发区用 grid 两列对齐", "grid-template-columns" in text)
+    # R2 之后样式/逻辑在 app.css / app.js 里，所以这三条不变量要跨文件查
+    css_status, css_text = http_get(base, "/app.css")
+    js_status, js_text = http_get(base, "/app.js")
+    check("GET /app.css  返回 200", css_status == 200, "status=%s" % css_status)
+    check("GET /app.js   返回 200", js_status == 200, "status=%s" % js_status)
+    check("GET /app.js   是 JS", "function" in js_text, js_text[:60])
+    check("GET /app.css  是 CSS", "#" in css_text and "{" in css_text, css_text[:60])
+    front = text + css_text + js_text
+    check("收发区没有 '>> ' 前缀", "'> > '" not in front and "'>> ' +" not in front)
+    check("回显有「设备」徽章", "'设备'" in front or '>设备<' in front)
+    check("收发区用 grid 两列对齐", "grid-template-columns" in css_text)
 
     # 2. /status
     status, text = http_get(base, "/status")

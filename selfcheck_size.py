@@ -66,17 +66,18 @@ SKIP_FILES = {
 # ⚠️ 往这里加新条目 = 承认你在欠债。加之前先问：能不能现在拆？
 KNOWN_OVERSIZE = {
     "web/index.html": {
-        "lines": 1427,
-        # 2026-11-07 +70：收发区从 <textarea> 换成富文本容器，
-        # 才能给"谁发的"上色（textarea 是纯文本控件，做不到分色）。
-        # 2026-11-07 +16：实现方接手重做——两列网格（左徽章/右内容），
-        # 去掉 ">>"、回显补「设备」徽章、回显对齐到命令文字的左边界。
-        # 2026-11-07 +312：新增「AI 通道」页签（两个 AI 的对话窗口）。
-        # 这 312 行里有 ~150 是 CSS、~150 是渲染逻辑，**该拆**了：
-        # 结构体检 R2 时必须把「通道」拆成独立的 channel.html/channel.js，
-        # 不能让它继续长在这个文件里。
-        "reason": "单文件 HTML+CSS+JS 全在一起；计划在结构体检 R2 拆成 "
-                  "index.html / app.css / app.js（「AI 通道」优先拆出去）",
+        "lines": 217,
+        # 2026-11-07 R2：1427 → 217。样式搬到 app.css、逻辑搬到 app.js，
+        # **纯搬移、没改行为**。这个文件现在只剩结构，不该再长回去。
+        "reason": "只剩 HTML 结构 + 一个 <link> 和一个 <script> 引用",
+    },
+    "web/app.js": {
+        "lines": 930,
+        # 从 index.html 原样搬出来的（整段仍是一个 IIFE，作用域没变）。
+        # 拆成独立文件只是第一步：930 行仍然太大，R2b 要按模块再拆
+        # （串口收发 / 规则编辑 / AI 通道）。注意它们共享同一个作用域，
+        # 直接切成多个 <script> 会互相看不见，拆的时候要把共享部分显式化。
+        "reason": "R2 从 index.html 搬出的前端逻辑；R2b 按模块再拆",
     },
     "index.js": {
         "lines": 1006,
@@ -88,7 +89,7 @@ KNOWN_OVERSIZE = {
                   "render 与 execute 各加一段（测试方要求 AI 自授权必须在返回里明说）",
     },
     "serial_bridge/supervisor.py": {
-        "lines": 947,
+        "lines": 976,
         "reason": "已从 1262 拆过一轮（第 4.5 件），仍偏大；"
                   "计划在结构体检 R1（多轨做完）再拆。"
                   "2026-11-07 +3：control() 增加 actor 参数与自授权门禁调用"
@@ -99,7 +100,7 @@ KNOWN_OVERSIZE = {
                   "2026-11-07 +36：AI⇄AI 通道的三个方法（list/send/verify）"
                   "——注意它们只是转发，判定逻辑在 channel.py，别往这里搬。"
                   "2026-11-07 +50：规则数据源统一（effective_watch）+ /watch 不写空值 + check_source 别名归一"
-                  "（/status 的 rules 永远是 0 条、check_source 被写成空串，两个真 bug）",
+                  "（/status 的 rules 永远是 0 条、check_source 被写成空串，两个真 bug）。2026-11-07 +29：R2 之后要发 app.css/app.js，新增 _load_asset（静态文件白名单）",
     },
 }
 
