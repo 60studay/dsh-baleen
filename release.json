@@ -1,0 +1,21 @@
+{
+  "_说明": "release.py 的项目配置。不配也行，脚本用通用默认值。",
+  "must_ignore": [
+    "_需求文档/",
+    "_模块配置备份/",
+    "logs/",
+    ".runtime/",
+    "_testlogs/",
+    "_归档/"
+  ],
+  "secret_patterns": [
+    ["C:\\\\Users\\\\[A-Za-z0-9_]+", "Windows 用户目录绝对路径"],
+    ["E:\\\\DSH", "本机绝对路径"],
+    ["ghp_[A-Za-z0-9]{20,}", "GitHub token"],
+    ["github_pat_[A-Za-z0-9_]{20,}", "GitHub token"],
+    ["sk-[A-Za-z0-9]{20,}", "API key"],
+    ["60studay", "GitHub 用户名"]
+  ],
+  "selfcheck_glob": "selfcheck_*.py",
+  "version_files": ["package.json"]
+}
