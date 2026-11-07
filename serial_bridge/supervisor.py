@@ -347,7 +347,7 @@ class WebServer(object):
         except Exception:
             pass
 
-    def control(self, action):
+    def control(self, action, actor="human"):
         # 按"动作 + 源状态"校验：resume 的目标也是 ai，不能只看目标状态
         mapping = {
             "ai": (STATE_AI, "交给AI", {STATE_HUMAN, STATE_PAUSED}),
@@ -358,6 +358,9 @@ class WebServer(object):
         if action not in mapping:
             raise BridgeError("config", "未知的控制动作：%r" % action)
         target, label, sources = mapping[action]
+        # AI 不能在人看着网页时自己把控制权抢回去
+        if target == STATE_AI:
+            self.state.assert_self_grant_allowed(actor)
         current_state = self.state.read().get("state")
         # 幂等：已经是目标状态就当作成功，不要报 400。
         # （早期版本把 human->human 当成非法迁移，导致"已经在人类手中"时

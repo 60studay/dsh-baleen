@@ -642,6 +642,13 @@ export function apply(ctx, config = {}) {
             },
           },
           alertsPath: { type: 'string' },
+          transport: {
+            type: 'object',
+            additionalProperties: true,
+            description:
+              'How bytes physically leave this scene: serial (type/device/baud/frame) or a future ' +
+              'tcp/file transport. The field set depends on the transport kind, so it is not enumerated.',
+          },
         },
       },
       render: (_args, value) => {
@@ -683,7 +690,8 @@ export function apply(ctx, config = {}) {
         note: current.note ?? '',
         aiMaySend: Boolean(data.ai_may_send),
         watched: Boolean(data.watched),
-        transport: data.transport ?? null,
+        // 只有拿到描述时才带上：schema 里它是 object，塞 null 会被校验拒掉
+        ...(data.transport ? { transport: data.transport } : {}),
         alerts: (data.alerts ?? []).map((alert) => ({
           time: alert.time ?? '',
           rule: alert.rule ?? '',

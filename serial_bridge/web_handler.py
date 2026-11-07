@@ -107,7 +107,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
                         hint=['请求体示例：{"action": "human"}',
                               "可选值：ai / pause / resume / human"],
                     )
-                return self._json(self.ctx["control"](action))
+                # actor 缺省当人类（网页按钮就是人类点的）；
+                # 显式传 ai 时，会受"有人看着网页不许自授权"的规则约束
+                return self._json(self.ctx["control"](action, str(body.get("actor") or "human")))
             if path == "/watch":
                 return self._json(self.ctx["set_watch"](body))
             if path == "/rules":

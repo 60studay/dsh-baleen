@@ -415,6 +415,11 @@ def cmd_control(paths, args):
         raise BridgeError("config", "未知的控制动作：%r" % args.action)
     target, label, sources = mapping[args.action]
 
+    # AI 不能在人看着网页时自己把控制权抢回去（见 state.assert_self_grant_allowed）
+    requester = (getattr(args, "by", None) or "cli")
+    if target == STATE_AI:
+        state.assert_self_grant_allowed(requester)
+
     current_state = state.read().get("state")
     # 幂等：已经在目标状态就直接成功（重按同一个按钮不该报错）
     if current_state == target:

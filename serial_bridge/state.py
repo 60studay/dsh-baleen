@@ -21,6 +21,8 @@ import os
 import threading
 import time
 
+from .errors import BridgeError
+
 STATE_HUMAN = "human"
 STATE_AI = "ai"
 STATE_PAUSED = "paused"
@@ -197,6 +199,34 @@ class SharedState(object):
             return current
         finally:
             self._release()
+
+    def assert_self_grant_allowed(self, actor):
+        """AI 想**自己**把控制权设成 ai 时，必须没人在看网页（headless）。
+
+        为什么要有这条：`human -> ai` 在按钮表里是合法的（人类点[交给AI]），
+        而 AI 也能调 `serial_control action=ai`。于是出现一个漏洞：
+        **人在网页上明确点了[人类接管]，AI 却能一行命令把自己又设回 ai**，
+        等于人类的选择被静默推翻。
+
+        规则：
+          · 有人在看网页（心跳在）→ 人类在场，只有人类能授权，AI 自授权一律拒绝
+          · 没人看网页（headless）  → 允许 AI 自主接管，这正是"把任务交给 AI"的场景
+
+        actor 传调用方身份（"ai" / "human" / "web" / "cli"）。非 ai 直接放行。
+        """
+        if str(actor or "").lower() != "ai":
+            return
+        if not self.presence_alive():
+            return
+        raise BridgeError(
+            "control_blocked",
+            "有人正在看网页，AI 不能自己接管控制权。",
+            hint=[
+                "请人在网页上点[交给AI]（或 [继续AI]）",
+                "或者先关掉网页——没有人在看时 AI 可以自主接管",
+                "这条规则是为了防止 AI 悄悄推翻人类刚做的选择",
+            ],
+        )
 
     def check_ai_allowed(self):
         """AI 发送前的门禁。返回 (allowed, state_dict)。
