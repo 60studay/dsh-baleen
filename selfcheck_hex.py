@@ -117,8 +117,10 @@ def main():
 
         def spy(cfg_, device_, payload_, baud_=None, raw_bytes=None):
             calls.append({"payload": payload_, "raw": raw_bytes})
-            return {"tx": payload_, "rx_bytes": b"", "rx_text": "", "rx_hex": "",
-                    "bytes": 0, "elapsed_ms": 1, "empty": True}
+            # 假设备要"回话"：无回显现在会抛 no_response（见 cli._require_reply），
+            # 这里测的是 raw_bytes 有没有传下去，不是无响应分支。
+            return {"tx": payload_, "rx_bytes": b"OK", "rx_text": "OK", "rx_hex": "4F 4B",
+                    "bytes": 2, "elapsed_ms": 1, "empty": False}
 
         sio.transact = spy
         try:

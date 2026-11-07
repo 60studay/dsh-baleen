@@ -190,6 +190,13 @@ def run_checks(base, original):
     check("GET /  返回 200", status == 200, "status=%s" % status)
     check("GET /  是网页", "<html" in text.lower() or "鲸歌" in text,
           "前 60 字：%r" % text[:60])
+    # 收发区三条 UI 不变量（用户 2026-11-07 提的）：
+    #   ① 不再用 ">>" 前缀区分命令（容易和串口数据里的字符混淆）
+    #   ② 回显要带「设备」徽章
+    #   ③ 两列对齐靠 grid 布局，不靠写死 padding
+    check("收发区没有 '>> ' 前缀", "'> > '" not in text and "'>> ' +" not in text)
+    check("回显有「设备」徽章", "'设备'" in text or '>设备<' in text)
+    check("收发区用 grid 两列对齐", "grid-template-columns" in text)
 
     # 2. /status
     status, text = http_get(base, "/status")

@@ -44,33 +44,36 @@
 
   /* 主区 */
   #consolewrap { flex: 1; display: flex; flex-direction: column; min-width: 0; padding: 10px 12px; gap: 10px; }
-  /* 回显区：从 <textarea> 换成富文本容器，才能给"谁发的"上颜色。
-     textarea 是纯文本控件，做不到分色，所以必须换。
-     代价：要自己实现滚动、清空、以及空状态提示。 */
+  /* 回显区：两列网格 —— 左列是"谁发的"徽章，右列是内容。
+     用 grid 而不是给正文加 padding：徽章宽度会随字体/缩放变，
+     写死 padding 迟早错位，让布局去保证对齐。 */
   #console {
     flex: 1; width: 100%; background: var(--panel); color: var(--fg);
     border: 1px solid var(--line); border-radius: 4px; padding: 10px;
-    font: inherit; overflow: auto; min-height: 120px;
-    white-space: pre-wrap; word-break: break-all; outline: none;
+    font: inherit; overflow: auto; min-height: 120px; outline: none;
+    --tagw: 46px;
   }
   #console:empty::before {
     content: attr(placeholder); color: var(--muted); opacity: .55;
   }
-  #console .ln { display: block; }
+  /* 一行 = 一条命令，或一段回显。第二列的左边界就是命令文字的左边界，
+     所以"设备回的话"天然和命令对齐，不需要额外缩进。 */
+  .ln { display: grid; grid-template-columns: var(--tagw) 1fr; column-gap: 8px; }
+  .ln > .body { white-space: pre-wrap; word-break: break-all; min-width: 0; }
   /* ── 收发方向徽章：一眼分清是谁发的 ────────────────────
      颜色沿用已有的语义色：AI=蓝、人=绿、定时=黄、设备=灰。
-     徽章做成等宽小方块，竖排时能对齐，扫视不吃力。 */
+     徽章等宽，竖排时左边自然成一列，扫视不吃力。 */
   .tag {
-    display: inline-block; min-width: 34px; padding: 0 5px; margin-right: 6px;
-    border-radius: 3px; font-size: 11px; font-weight: 700;
-    text-align: center; line-height: 1.5; vertical-align: 1px;
-    user-select: none;
+    width: var(--tagw); box-sizing: border-box;
+    padding: 0 4px; margin-bottom: 2px;
+    border-radius: 3px; font-size: 11px; font-weight: 700; line-height: 1.5;
+    text-align: center; user-select: none; justify-self: start;
   }
   .tag.ai   { background: rgba(47,129,247,.22); color: var(--ai);    border: 1px solid var(--ai); }
   .tag.human{ background: rgba(63,185,80,.22);  color: var(--human); border: 1px solid var(--human); }
   .tag.auto { background: rgba(210,153,34,.22); color: var(--paused);border: 1px solid var(--paused); }
   .tag.dev  { background: rgba(138,138,138,.18);color: var(--muted); border: 1px solid var(--line); }
-  /* 命令本身也给点颜色，和回显区分开 */
+  /* 命令文字给点颜色，和回显区分开——区分靠颜色和徽章，不靠 ">>" 前缀 */
   .tx { color: #9cdcfe; }
   .rx { color: var(--fg); }
   .composer { display: flex; gap: 8px; }
@@ -423,15 +426,18 @@
   }
 
   /* ── 回显区渲染 ─────────────────────────────────────────
-   *  从 textarea 换成 div 之后，append() 不再"往字符串末尾贴"，
-   *  而是"往最后一个文本块末尾贴"，这样徽章那一行不会被拆散。
+   *  两列网格：左列徽章、右列内容。TX 和 RX 走同一套排版，
+   *  所以"设备回的话"会自然对齐到"命令文字"的左边。
    *
-   *  设计要点：
-   *  - 徽章只在"一条命令"开头出现一次，回显跟在同一行的后面
-   *  - 连续的回显会粘在同一个块里（串口本来就是流，不该逐字节换行）
-   *  - 超过长度就丢最老的，避免长时间跑内存涨爆
+   *  为什么不写 ">> 命令"：
+   *    用户反馈 >> 容易和串口数据里的字符混淆。改成靠颜色 + 徽章区分。
+   *  为什么回显要粘在一个块里：
+   *    串口是字节流，半包/粘包都常见；逐字节换行会把 "OK PO" / "NG" 拆成两行。
+   *  为什么用 grid 而不是给回显加 padding：
+   *    徽章宽度随字体/缩放变，写死 padding 迟早错位。
    */
   var MAX_CHARS = 300000;
+  var curRx = null;      // 当前正在追加的回显块（发完命令就置空，下一条回显新起一行）
 
   function trimConsole() {
     while (consoleEl.textContent.length > MAX_CHARS && consoleEl.firstChild) {
@@ -439,40 +445,51 @@
     }
   }
 
+  /** 建一行：左列徽章、右列正文。返回正文节点供调用方追加。 */
+  function newRow(tagClass, tagText) {
+    var row = document.createElement('div');
+    row.className = 'ln';
+    var tag = document.createElement('span');
+    tag.className = 'tag ' + tagClass;
+    tag.textContent = tagText;
+    var body = document.createElement('span');
+    body.className = 'body';
+    row.appendChild(tag);
+    row.appendChild(body);
+    consoleEl.appendChild(row);
+    return body;
+  }
+
+  /** 追加回显：贴到当前回显行；没有就新起一行（设备徽章）。 */
   function append(text) {
     if (!text) return;
-    // 回显：贴到最后一个块里；没有块就新建一个
-    var last = consoleEl.lastChild;
-    if (!last || last.nodeType !== 1 || !last.classList.contains('rx-block')) {
-      last = document.createElement('span');
-      last.className = 'rx-block rx';
-      consoleEl.appendChild(last);
+    if (!curRx) {
+      curRx = newRow('dev', '设备');
+      curRx.classList.add('rx');
     }
-    last.appendChild(document.createTextNode(text));
+    curRx.appendChild(document.createTextNode(text));
     consoleEl.scrollTop = consoleEl.scrollHeight;
     trimConsole();
   }
 
-  /** 打一行"谁发的 + 命令"，后面紧跟的回显会自动贴在这一行下面。
-   *  who: 'ai' | 'human' | 'auto' | 'dev'
-   */
+  /* source → [徽章样式, 徽章文字]。web/manual 都是"人从网页点的"，算"我"。 */
+  var WHO = {
+    ai: ['ai', 'AI'],
+    human: ['human', '我'],
+    web: ['human', '我'],
+    manual: ['human', '我'],
+    auto: ['auto', '定时'],
+    watch: ['auto', '定时'],
+    dev: ['dev', '设备']
+  };
+
+  /** 打一行"谁发的 + 命令"，紧跟其后的回显会自动对齐到命令文字下面。 */
   function appendTx(who, command) {
-    var label = { ai: 'AI', human: '我', auto: '定时', dev: '设备' }[who] || who;
-    var row = document.createElement('div');
-    row.className = 'ln tx-row';
-    var tag = document.createElement('span');
-    tag.className = 'tag ' + who;
-    tag.textContent = label;
-    var body = document.createElement('span');
-    body.className = 'tx';
-    body.textContent = '>> ' + command;
-    row.appendChild(tag);
-    row.appendChild(body);
-    consoleEl.appendChild(row);
-    // 换行块，让后面的回显从新的一行开始
-    var block = document.createElement('span');
-    block.className = 'rx-block rx';
-    consoleEl.appendChild(block);
+    var meta = WHO[who] || WHO.dev;
+    var body = newRow(meta[0], meta[1]);
+    body.classList.add('tx');
+    body.textContent = command;
+    curRx = null;         // 下一条回显要新起一行（设备徽章）
     consoleEl.scrollTop = consoleEl.scrollHeight;
     trimConsole();
   }
@@ -677,10 +694,9 @@
     });
     api('/poll').then(function (data) {
       if (!data.ok) return;
-      // 自动发送 / AI 发起的每一帧：先打来源+命令，再打回显
+      // 自动发送 / AI 发起的每一帧：先打来源+命令，再打回显（来源映射见 WHO）
       (data.frames || []).forEach(function (f) {
-        var who = f.source === 'ai' ? 'ai' : (f.source === 'auto' ? 'auto' : 'dev');
-        appendTx(who, f.tx);
+        appendTx(f.source || 'auto', f.tx);
         if (dispMode === 'hex') {
           if (f.hex) append(f.hex + '\n');
         } else if (f.rx) {
@@ -705,8 +721,8 @@
     var text = $('cmd').value;
     if (!text.trim()) return;
     $('cmd').value = '';
-    // 先发，成功了才把 `>> 命令` 打到数据区。
-    // 否则被拒绝（控制权/被占用/格式错）时界面也有 `>>`，看起来像发出去了（Bug 9b）。
+    // 先发，成功了才把这条命令打到回显区。
+    // 否则被拒绝（控制权/被占用/格式错）时界面也显示成"发过了"，看起来像成功了（Bug 9b）。
     post('/send', { text: text, mode: dispMode, actor: 'human' }).then(function (data) {
       if (!data.ok) {
         pushEvent('bad', '发送失败：' + errLine(data.error));

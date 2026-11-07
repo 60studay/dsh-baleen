@@ -109,6 +109,22 @@ def _fail(error):
     return 1
 
 
+def _require_reply(data, cfg):
+    """同步发送却一个字节都没收到 → 按 `no_response` 报错，而不是"成功 + 一句警告"。
+
+    为什么改成抛错：
+      · 调用方（AI / 脚本）几乎总是为了拿回显才发命令，**空的成功结果是最容易
+        被忽略的失败**——模型看到 ok=true 就以为命令执行了
+      · `errors.py` 早就把 `no_response` 定义成一类故障，停留在警告文本里等于没用
+      · 真正"发完就走、不等回显"的场合用 `--no-wait` / `wait:false`，
+        那条路带 `submitted=true`，不经过这个判断
+    """
+    if data.get("submitted") or not data.get("empty"):
+        return data
+    raise serial_io.describe_no_response(
+        {"device": data.get("port") or "串口"}, cfg)
+
+
 def _forward_to_daemon(paths, scene_name, command, actor, no_wait=False):
     """管家在跑就把命令交给它（三级降级的第一级）。
 
@@ -283,7 +299,7 @@ def cmd_send(paths, args):
     via_daemon = _forward_to_daemon(paths, scene.name, args.command, actor,
                                     no_wait=bool(getattr(args, "no_wait", False)))
     if via_daemon is not None:
-        return _ok(via_daemon)
+        return _ok(_require_reply(via_daemon, cfg))
 
     # 二级：网页在跑时统一走它的 /send，这样用户能在页面上看到 AI 发了什么。
     forwarded = _forward_to_web(paths, scene.name, args.command, actor)
@@ -308,9 +324,7 @@ def cmd_send(paths, args):
         }
         if accepted_only:
             data["note"] = "已交给网页发送（监视模式，回显在网页上）"
-        if data["empty"] and not accepted_only:
-            data["warning"] = "网页转发了命令，但设备没有回显。"
-        return _ok(data)
+        return _ok(_require_reply(data, cfg))
 
     resolved = resolve_port(cfg)
 
@@ -353,9 +367,7 @@ def cmd_send(paths, args):
         "elapsed_ms": result["elapsed_ms"],
         "empty": result["empty"],
     }
-    if result["empty"]:
-        data["warning"] = serial_io.describe_no_response(resolved, cfg).render()
-    return _ok(data)
+    return _ok(_require_reply(data, cfg))
 
 
 def cmd_read(paths, args):

@@ -108,6 +108,28 @@ def main():
         after_cmd = sio.drain(cfg, device, duration_ms=2000)
         check("命令后静置 2 秒 = 0 字节", after_cmd["bytes"] == 0,
               "又收到 %d 字节: %r" % (after_cmd["bytes"], after_cmd["rx_text"][:80]))
+
+        # ── [5] 不需要硬件，纯逻辑 ────────────────────────────────────────
+        # "静默"（没发命令，所以什么都没有）和"无响应"（发了命令，但没回）
+        # 是两件事。前者正常，后者是故障，必须报出来——这正是本节的主题。
+        print("\n[5] 「静默」和「无响应」是两件事")
+        from serial_bridge.cli import _require_reply
+        probe_cfg = {
+            "baud": 115200,
+            "newline": "\\r\\n",
+            "no_response_hint": ["这块板子可能只是被 D 命令故意拖慢了"],
+        }
+        got = {"port": "COM9", "empty": False, "submitted": False}
+        check("有回显 → 原样返回", _require_reply(got, probe_cfg) is got)
+        sent = {"port": "COM9", "empty": True, "submitted": True}
+        check("wait:false（发完就走）→ 不算无响应",
+              _require_reply(sent, probe_cfg) is sent)
+        try:
+            _require_reply({"port": "COM9", "empty": True, "submitted": False}, probe_cfg)
+            check("发了不回 → 抛 no_response", False, "没有抛")
+        except BridgeError as exc:
+            check("发了不回 → 抛 no_response", exc.kind == "no_response", exc.kind)
+            check("带出场景专属提示", any("D 命令" in h for h in exc.hint), str(exc.hint))
     finally:
         if old_log is None:
             os.environ.pop("SERIAL_BRIDGE_LOG_DIR", None)

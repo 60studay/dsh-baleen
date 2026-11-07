@@ -314,6 +314,11 @@ class WebServer(object):
             self.logger.append("RX", result["rx_text"])
         self.state.update(port=resolved["device"], baud=int(cfg.get("baud") or 0))
 
+        # 同步发送却一个字节都没收到 → 这是故障，不是"成功但回显为空"。
+        # 理由同 cli._require_reply：空的成功结果最容易被当成"命令执行了"。
+        if result["empty"]:
+            raise serial_io.describe_no_response(resolved, cfg)
+
         # Bug 7：手动发的回显也要跑判定，否则"设备回了 FAULT 但 alerts 是空的"
         if not result["empty"]:
             self._maybe_check(result["rx_text"], "manual")
