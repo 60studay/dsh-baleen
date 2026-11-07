@@ -64,8 +64,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if path in ("/", "/index.html"):
                 html = self.ctx["page"]
                 return self._send(200, html, "text/html; charset=utf-8")
-            if path in ("/app.css", "/app.js"):
-                # R2 把样式/逻辑拆成了独立文件，必须真的能把它们发出去，
+            if path in ("/app.css", "/app.js") or (
+                    path.startswith("/js/") and path.endswith(".js")):
+                # R2/R2b 把样式和逻辑拆成了独立文件，必须真的能把它们发出去，
                 # 否则页面一加载就是白屏（而且只在浏览器控制台报 404，很难查）。
                 asset = self.ctx["asset"](path)
                 if asset is None:

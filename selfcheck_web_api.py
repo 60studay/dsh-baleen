@@ -200,6 +200,15 @@ def run_checks(base, original):
     check("GET /app.css  返回 200", css_status == 200, "status=%s" % css_status)
     check("GET /app.js   返回 200", js_status == 200, "status=%s" % js_status)
     check("GET /app.js   是 JS", "function" in js_text, js_text[:60])
+    # R2b：逻辑拆成 ES module，两个模块也必须能取到，否则页面白屏
+    core_status, core_text = http_get(base, "/js/core.js")
+    layout_status, layout_text = http_get(base, "/js/layout.js")
+    check("GET /js/core.js   返回 200", core_status == 200, "status=%s" % core_status)
+    check("GET /js/layout.js 返回 200", layout_status == 200, "status=%s" % layout_status)
+    check("GET /js/core.js   是 ES module",
+          "export" in core_text, core_text[:60])
+    check("页面用 type=module 加载",
+          'type="module"' in text, text[:80])
     check("GET /app.css  是 CSS", "#" in css_text and "{" in css_text, css_text[:60])
     front = text + css_text + js_text
     check("收发区没有 '>> ' 前缀", "'> > '" not in front and "'>> ' +" not in front)

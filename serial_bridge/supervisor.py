@@ -995,20 +995,26 @@ _ASSET_TYPES = {
 
 
 def _load_asset(name):
-    """读 web/ 下的静态文件（R2 拆出来的 app.css / app.js）。
+    """读 web/ 下的静态文件（app.css / app.js / js/*.js）。
 
     返回 (bytes, content_type)；不存在返回 None。
-    白名单式：只认 .css/.js，且不许带路径分隔符——不给任意文件读取留口子。
+    白名单式：只认 .css/.js，**只允许 js/ 这一层子目录**，不许 `..`。
+    这是"网页能读服务器文件"的唯一入口，边界必须是死的。
     """
     base = str(name or "").lstrip("/")
-    if not base or "/" in base or "\\" in base or ".." in base:
+    if not base or "\\" in base or ".." in base:
         return None
-    suffix = os.path.splitext(base)[1].lower()
+    parts = [p for p in base.split("/") if p]
+    if not parts or len(parts) > 2:
+        return None
+    if len(parts) == 2 and parts[0] != "js":
+        return None
+    suffix = os.path.splitext(parts[-1])[1].lower()
     content_type = _ASSET_TYPES.get(suffix)
     if not content_type:
         return None
     path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "web", base)
+                        "web", *parts)
     try:
         with open(path, "rb") as handle:
             return handle.read(), content_type
