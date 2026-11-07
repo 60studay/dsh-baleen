@@ -343,9 +343,14 @@
 
   /* ── 事件 ─────────────────────────────────────────────── */
   function send() {
-    var text = $('cmd').value;
-    if (!text.trim()) return;
+    var raw = $('cmd').value;
+    if (!raw.trim()) return;
+    // 输入框是多行的，但**换行不原样发出去**：串口命令的结尾由场景的 newline
+    // 统一加，手工塞进去的换行会变成命令的一部分。
+    // hex 模式本来就允许用空格分隔字节，所以这里统一按空格合并。
+    var text = raw.replace(/[\r\n]+/g, ' ').trim();
     $('cmd').value = '';
+    autoGrow();
     // 先发，成功了才把这条命令打到回显区。
     // 否则被拒绝（控制权/被占用/格式错）时界面也显示成"发过了"，看起来像成功了（Bug 9b）。
     post('/send', { text: text, mode: dispMode, actor: 'human' }).then(function (data) {
@@ -361,6 +366,16 @@
     });
   }
 
+  /** 输入框随内容长高，最多 40vh（CSS 里也有 max-height 兜底）。 */
+  function autoGrow() {
+    var box = $('cmd');
+    box.style.height = 'auto';
+    var limit = Math.round(window.innerHeight * 0.4);
+    box.style.height = Math.min(box.scrollHeight, limit) + 'px';
+  }
+
+  $('cmd').addEventListener('input', autoGrow);
+
   $('sendBtn').addEventListener('click', send);
 
   // 轻模式默认不主动读串口（保证不占口），需要时手动读一帧
@@ -373,10 +388,19 @@
     });
   });
 
-  // 清空回显区（状态轨道保留，方便对照）
+  // 清空：回显 + 状态轨道 + 告警，一起清。
+  // 用户测试时告警一直弹，"清空"只清回显等于没清（14:35 需求 3）。
   $('btnClear').addEventListener('click', function () {
     consoleEl.textContent = '';
     consoleEl.scrollTop = 0;
+    curRx = null;
+    $('timelineList').textContent = '';
+    $('alertbar').classList.remove('show');
+    post('/alerts/clear', {}).then(function (data) {
+      if (!data.ok) { pushEvent('bad', '清空告警失败：' + errLine(data.error)); return; }
+      pushEvent('', '已清空回显/状态轨道/告警' +
+        (typeof data.cleared === 'number' ? '（告警 ' + data.cleared + ' 条）' : ''));
+    });
   });
 
   // 关闭告警条：记下"已看到这里"，比它旧的不再弹（日志文件不动）
@@ -389,7 +413,114 @@
     pushEvent('', '已关闭告警提示（日志仍保留）');
   });
   $('cmd').addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') send();
+    // 回车发送、Shift+回车换行 —— 聊天软件的通用约定，不用教。
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  });
+
+  /* ── 主题（跟随系统 / 深 / 亮）────────────────────────── */
+  // 用户："希望颜色也能跟着电脑配置来"。默认跟随系统；
+  // 想固定也能固定（串口工具长时间盯着，有人就喜欢深色）。
+  var THEME_KEY = 'whale.theme';
+
+  function applyTheme(theme) {
+    var html = document.documentElement;
+    if (theme === 'dark' || theme === 'light') html.setAttribute('data-theme', theme);
+    else html.removeAttribute('data-theme');
+    document.querySelectorAll('.theme-btn').forEach(function (btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-theme') === (theme || 'auto'));
+    });
+  }
+
+  document.querySelectorAll('.theme-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var theme = btn.getAttribute('data-theme');
+      applyTheme(theme);
+      try { localStorage.setItem(THEME_KEY, theme); } catch (e) { /* 隐私模式忽略 */ }
+    });
+  });
+
+  var savedTheme = 'auto';
+  try { savedTheme = localStorage.getItem(THEME_KEY) || 'auto'; } catch (e) { /* 忽略 */ }
+  applyTheme(savedTheme);
+
+  /* ── 可拖动布局 ──────────────────────────────────────────
+   *  用户从第一天就想要这个："侧边栏和下边栏不能自由拖动改变大小"。
+   *  自己写（不引 split.js）：项目零依赖，两条分隔线不值一个库。
+   *  尺寸存 localStorage，否则刷新就还原，等于没做；双击恢复默认。
+   */
+  var LAYOUT_KEY = 'whale.layout';
+  var SIDEW_MIN = 180, SIDEW_MAX = 620;
+  var INPUT_MIN = 38, INPUT_MAX = 400;
+
+  function readLayout() {
+    try { return JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}') || {}; }
+    catch (e) { return {}; }
+  }
+
+  function saveLayout(next) {
+    try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(next)); } catch (e) { /* 忽略 */ }
+  }
+
+  function applyLayout(layout) {
+    var root = document.documentElement;
+    if (layout.sidew) root.style.setProperty('--sidew', layout.sidew + 'px');
+    else root.style.removeProperty('--sidew');
+    if (layout.inputH) root.style.setProperty('--input-h', layout.inputH + 'px');
+    else root.style.removeProperty('--input-h');
+    autoGrow();
+  }
+
+  function bindSplitter(el, onDrag, onReset) {
+    el.addEventListener('mousedown', function (e) {
+      e.preventDefault();
+      el.classList.add('dragging');
+      document.body.classList.add('dragging');
+      function move(ev) { onDrag(ev); }
+      function up() {
+        el.classList.remove('dragging');
+        document.body.classList.remove('dragging');
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+      }
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+    });
+    el.addEventListener('dblclick', onReset);
+  }
+
+  var layout = readLayout();
+  applyLayout(layout);
+
+  bindSplitter($('vsplit'), function (e) {
+    // 侧边栏在右边：拖到哪儿，宽度就是"窗口右边到鼠标"的距离
+    var width = Math.round(window.innerWidth - e.clientX);
+    width = Math.max(SIDEW_MIN, Math.min(SIDEW_MAX, width));
+    layout.sidew = width;
+    applyLayout(layout);
+  }, function () {
+    layout.sidew = 0;
+    applyLayout(layout);
+    saveLayout(layout);
+  });
+
+  bindSplitter($('hsplit'), function (e) {
+    // 往上拖 = 输入框变高
+    var composerTop = $('cmd').getBoundingClientRect().bottom;
+    var height = Math.round(composerTop - e.clientY);
+    height = Math.max(INPUT_MIN, Math.min(INPUT_MAX, height));
+    layout.inputH = height;
+    applyLayout(layout);
+  }, function () {
+    layout.inputH = 0;
+    applyLayout(layout);
+    saveLayout(layout);
+  });
+
+  document.addEventListener('mouseup', function () {
+    if (layout) saveLayout(layout);
   });
 
   document.querySelectorAll('#controlbar button').forEach(function (btn) {
@@ -876,7 +1007,9 @@
 
   function sendChannel() {
     var body = {
-      from: $('chanFrom').value,
+      // 网页上打字的人只能是「人」。以前这里是个下拉框（AI-A / AI-B / 人），
+      // 等于让用户随手冒充 AI，写进去的记录也就不可信了。
+      from: 'human',
       type: $('chanType').value,
       claim: $('chanClaim').value.trim(),
       not_verified: $('chanNotVerified').value

@@ -1,4 +1,6 @@
 <!doctype html>
+<!-- data-theme 留空 = 跟随系统（CSS 里用 prefers-color-scheme）；
+     设成 dark/light 就是用户手动覆盖，存 localStorage。 -->
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -14,6 +16,11 @@
   <span class="pill" id="portOwner">—</span>
   <span class="pill" id="modePill">轻模式</span>
   <span class="spacer"></span>
+  <span class="theme-switch" title="配色：跟随系统 / 固定深色 / 固定亮色">
+    <button class="theme-btn" data-theme="auto"  title="跟随系统">跟随</button>
+    <button class="theme-btn" data-theme="dark"  title="固定深色">深</button>
+    <button class="theme-btn" data-theme="light" title="固定亮色">亮</button>
+  </span>
   <button class="ghost" id="sidebarToggle" title="展开/收起设置">设置</button>
 </header>
 
@@ -31,12 +38,14 @@
     <div id="paneSerial" class="pane">
     <!-- 系统事件轨道：控制权/端口/告警等，与串口数据分区显示 -->
     <div id="timeline">
-      <div class="tl-head"><span>状态轨道</span><span class="tl-actions"><button class="tiny ghost" id="btnReadOnce">读一次</button><button class="tiny ghost" id="btnClear">清空</button></span></div>
+      <div class="tl-head"><span>状态轨道</span><span class="tl-actions"><button class="tiny ghost" id="btnReadOnce">读一次</button><button class="tiny ghost" id="btnClear" title="清空回显、状态轨道和告警记录">清空</button></span></div>
       <div id="timelineList"></div>
     </div>
     <div id="console" tabindex="0" placeholder="串口收发内容会显示在这里…"></div>
+    <!-- 纵向拖拽条：往上拖 = 输入框变高（想写长命令时用） -->
+    <div id="hsplit" title="上下拖动改变输入区高度（双击恢复默认）"></div>
     <div class="composer">
-      <input id="cmd" placeholder="输入指令后回车发送" autocomplete="off">
+      <textarea id="cmd" rows="1" placeholder="输入指令，回车发送（Shift+回车换行）" autocomplete="off"></textarea>
       <button id="sendBtn">发送</button>
     </div>
     <div id="controlbar">
@@ -57,11 +66,9 @@
       </div>
       <div id="chanCompose">
         <div class="chan-row">
-          <select id="chanFrom">
-            <option value="ai-a">AI-A（我）</option>
-            <option value="ai-b">AI-B（对面）</option>
-            <option value="human">人</option>
-          </select>
+          <!-- 网页上打字的人**只能是人**，不该让人选"我是 AI-A"。
+               身份属于系统事实，不是给用户的下拉选项（用户原话："这是什么玩意儿"）。 -->
+          <span class="chan-who" title="在这个网页里打字的一律记作「人」">人</span>
           <select id="chanType">
             <option value="note">对话</option>
             <option value="claim">声明（要带证据）</option>
@@ -85,6 +92,9 @@
       </div>
     </div>
   </section>
+
+  <!-- 横向拖拽条：左右拖动改变侧边栏宽度（双击恢复默认） -->
+  <div id="vsplit" title="左右拖动改变侧边栏宽度（双击恢复默认）"></div>
 
   <aside id="sidebar">
     <div class="group">

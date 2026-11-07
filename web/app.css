@@ -1,10 +1,41 @@
 /* 鲸歌网页样式（R2：从 index.html 搬出来的，纯搬移） */
+  /* ── 主题 ────────────────────────────────────────────────
+     默认跟随系统（prefers-color-scheme）；用户可以在页头三态切换里
+     强制深/亮（写进 <html data-theme> 并存 localStorage）。
+     语义色（成功/警告/危险）在两种底色下对比度要求不同，所以两套都给。 */
   :root {
     --bg: #1e1e1e; --panel: #252526; --line: #3c3c3c; --fg: #d4d4d4;
     --muted: #8a8a8a; --accent: #0e639c; --accent-hover: #1177bb;
     --human: #3fb950; --ai: #2f81f7; --paused: #d29922; --danger: #f85149;
+    --btn-fg: #fff; --brand: #4ec9b0;
+  }
+  :root[data-theme="light"] {
+    --bg: #ffffff; --panel: #f6f6f6; --line: #d0d0d0; --fg: #1f1f1f;
+    --muted: #6a6a6a; --accent: #0e639c; --accent-hover: #1177bb;
+    --human: #1a7f37; --ai: #0969da; --paused: #9a6700; --danger: #cf222e;
+    --btn-fg: #fff; --brand: #4ec9b0;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #ffffff; --panel: #f6f6f6; --line: #d0d0d0; --fg: #1f1f1f;
+      --muted: #6a6a6a; --accent: #0e639c; --accent-hover: #1177bb;
+      --human: #1a7f37; --ai: #0969da; --paused: #9a6700; --danger: #cf222e;
+      --btn-fg: #fff; --brand: #4ec9b0;
+    }
   }
   * { box-sizing: border-box; }
+  /* ── 滚动条 ──────────────────────────────────────────────
+     深色页面配浏览器原生浅色滚动条非常刺眼（用户原话"白灰配，突兀"）。
+     用 ::-webkit-scrollbar（Edge/Chrome 都认）；注意它和 scrollbar-color
+     同时写会互相抵消，所以只留这一套。 */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: var(--line); border-radius: 5px;
+    border: 2px solid transparent; background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background: var(--muted); background-clip: padding-box; }
+  ::-webkit-scrollbar-corner { background: transparent; }
   html, body { height: 100%; margin: 0; }
   body {
     background: var(--bg); color: var(--fg);
@@ -15,7 +46,7 @@
     display: flex; align-items: center; gap: 12px;
     padding: 10px 14px; border-bottom: 1px solid var(--line);
   }
-  header h1 { font-size: 15px; margin: 0; color: #4ec9b0; font-weight: 600; }
+  header h1 { font-size: 15px; margin: 0; color: var(--brand); font-weight: 600; }
   header .scene { color: var(--muted); }
   header .spacer { flex: 1; }
   .pill {
@@ -23,18 +54,46 @@
     border: 1px solid var(--line); color: var(--muted);
   }
   #alertbar {
-    display: none; padding: 8px 14px; background: #4a1d1d;
-    border-bottom: 1px solid var(--danger); color: #ffb4b4; font-size: 13px;
+    display: none; padding: 8px 14px; background: rgba(248,81,73,.14);
+    border-bottom: 1px solid var(--danger); color: var(--danger); font-size: 13px;
     align-items: center; gap: 10px;
   }
   #alertbar.show { display: flex; }
   #alertbarText { flex: 1; }
   #alertbarClose {
-    background: transparent; border: none; color: #ffb4b4;
-    font-size: 18px; line-height: 1; cursor: pointer; padding: 0 4px;
+    background: transparent; border: none; color: var(--danger);
+    /* 用户要频繁关告警（测试时规则一直触发），原来那个 × 太小点不准。
+       鼠标点击目标的下限一般按 24×24 算，这里给到 32×32。 */
+    min-width: 32px; min-height: 32px; padding: 0 8px;
+    font-size: 20px; line-height: 1; cursor: pointer; border-radius: 4px;
   }
-  #alertbarClose:hover { color: #fff; }
+  #alertbarClose:hover { color: #fff; background: rgba(255,255,255,.10); }
   main { flex: 1; display: flex; min-height: 0; }
+
+  /* ── 页头主题切换（跟随 / 深 / 亮）────────────────────── */
+  .theme-switch { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+  .theme-btn {
+    background: transparent; color: var(--muted); border: none;
+    padding: 3px 9px; font-size: 12px; cursor: pointer;
+  }
+  .theme-btn + .theme-btn { border-left: 1px solid var(--line); }
+  .theme-btn:hover { color: var(--fg); background: var(--panel); }
+  .theme-btn.active { background: var(--accent); color: var(--btn-fg); }
+
+  /* ── 拖拽条 ──────────────────────────────────────────────
+     自己写而不是引 split.js：这个项目零依赖。
+     用 CSS 变量记住尺寸（--sidew / --input-h），JS 只改变量 + 存 localStorage。 */
+  #vsplit {
+    flex: 0 0 5px; cursor: col-resize; background: transparent;
+    border-left: 1px solid var(--line);
+  }
+  #vsplit:hover, #vsplit.dragging { background: var(--accent); }
+  #hsplit {
+    flex: 0 0 5px; cursor: row-resize; background: transparent;
+    margin: -5px 0;
+  }
+  #hsplit:hover, #hsplit.dragging { background: var(--accent); }
+  body.dragging { user-select: none; }
 
   /* 主区 */
   #consolewrap { flex: 1; display: flex; flex-direction: column; min-width: 0; padding: 10px 12px; gap: 10px; }
@@ -137,22 +196,28 @@
     color: #ff8a8a; font-size: 12px; line-height: 1.6;
     border-left: 2px solid #8b2a2a; padding-left: 8px; white-space: pre-wrap;
   }
-  .composer { display: flex; gap: 8px; }
-  .composer input {
+  .composer { display: flex; gap: 8px; align-items: flex-end; }
+  /* 输入框换成 textarea：命令偶尔很长（hex 串、批量命令），单行看不全。
+     min-height 由拖拽条控制（--input-h），内容多了自动长到上限。 */
+  .composer textarea {
     flex: 1; background: var(--panel); color: var(--fg); border: 1px solid var(--line);
-    border-radius: 4px; padding: 9px 10px; font: inherit;
+    border-radius: 4px; padding: 9px 10px; font: inherit; resize: none;
+    min-height: var(--input-h, 38px); max-height: 40vh; overflow-y: auto;
+    line-height: 1.45;
   }
-  .composer input:focus, select:focus, input[type=number]:focus { outline: 1px solid var(--accent); }
+  .composer input:focus, .composer textarea:focus,
+  select:focus, input[type=number]:focus { outline: 1px solid var(--accent); }
+  .composer button { align-self: stretch; }
   button {
-    background: var(--accent); color: #fff; border: none; border-radius: 4px;
+    background: var(--accent); color: var(--btn-fg); border: none; border-radius: 4px;
     padding: 9px 16px; font: inherit; cursor: pointer;
   }
   button:hover:not(:disabled) { background: var(--accent-hover); }
   button:disabled { opacity: .4; cursor: not-allowed; }
   button.ghost { background: transparent; border: 1px solid var(--line); color: var(--fg); }
-  button.ghost:hover:not(:disabled) { background: #333; }
-  button.danger { background: #8b2a2a; }
-  button.danger:hover { background: #a83232; }
+  button.ghost:hover:not(:disabled) { background: rgba(127,127,127,.18); }
+  button.danger { background: var(--danger); }
+  button.danger:hover { filter: brightness(1.15); }
 
   /* 控制权条 */
   #controlbar {
@@ -175,7 +240,7 @@
 
   /* 侧栏 */
   aside {
-    width: 258px; flex: 0 0 auto; border-left: 1px solid var(--line);
+    width: var(--sidew, 258px); flex: 0 0 auto; border-left: 1px solid var(--line);
     padding: 12px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto;
   }
   aside.collapsed { display: none; }
@@ -223,7 +288,7 @@
   .divider { height: 1px; background: var(--line); }
   /* 系统事件轨道 */
   #timeline {
-    border: 1px solid var(--line); border-radius: 4px; background: #1a1a1a;
+    border: 1px solid var(--line); border-radius: 4px; background: var(--panel);
     display: flex; flex-direction: column; max-height: 96px; flex: 0 0 auto;
   }
   .tl-head {
@@ -234,7 +299,7 @@
   .tl-actions { display: flex; gap: 4px; }
   #timelineList { overflow-y: auto; padding: 4px 8px; font-size: 12px; line-height: 1.6; }
   .tl-item { color: var(--muted); white-space: nowrap; }
-  .tl-item .t { color: #6a6a6a; margin-right: 6px; }
+  .tl-item .t { color: var(--muted); opacity: .75; margin-right: 6px; }
   .tl-item.ctrl { color: var(--ai); }
   .tl-item.warn { color: var(--paused); }
   .tl-item.bad  { color: var(--danger); }
@@ -275,7 +340,7 @@
     background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
     padding: 16px; width: 400px; max-width: 92vw; display: flex; flex-direction: column; gap: 10px;
   }
-  .modal-box h3 { margin: 0; font-size: 14px; color: #4ec9b0; }
+  .modal-box h3 { margin: 0; font-size: 14px; color: var(--brand); }
   .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
   .row { display: flex; gap: 8px; }
   @media (max-width: 760px) {
