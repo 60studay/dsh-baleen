@@ -108,7 +108,13 @@ def main():
     if not os.path.exists(INDEX_JS):
         bad("index.js 存在", "找不到 %s" % INDEX_JS)
     else:
+        # 拆成模块之后，工具定义在 tools/*.js 里（index.js 只剩入口）。
+        # 两处都要扫，否则总账里的"9 个工具"永远对不上。
         js = read_text(INDEX_JS)
+        for root, _dirs, files in os.walk(os.path.join(HERE, "tools")):
+            for fname in sorted(files):
+                if fname.endswith(".js"):
+                    js += "\n" + read_text(os.path.join(root, fname))
         actual_tools = re.findall(r"name:\s*['\"](serial_[a-z_]+)['\"]", js)
         actual_tools = sorted(set(actual_tools))
 

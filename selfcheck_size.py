@@ -65,15 +65,6 @@ SKIP_FILES = {
 #
 # ⚠️ 往这里加新条目 = 承认你在欠债。加之前先问：能不能现在拆？
 KNOWN_OVERSIZE = {
-    "index.js": {
-        "lines": 1006,
-        "reason": "9 个工具的定义挤在一个文件；计划在结构体检 R2 按"
-                  "『工具组』拆（串口/管家/网页）。"
-                  "2026-11-07 +8：serial_status 的 output.schema 补上 transport 字段"
-                  "（此前 execute 返回它但 schema 没声明，导致该工具每次调用都被校验拒绝）。"
-                  "2026-11-07 +12：serial_control 的自授权审计——schema 补 selfGranted/note，"
-                  "render 与 execute 各加一段（测试方要求 AI 自授权必须在返回里明说）",
-    },
     "serial_bridge/supervisor.py": {
         "lines": 1027,
         "reason": "已从 1262 拆过一轮（第 4.5 件），仍偏大；"
